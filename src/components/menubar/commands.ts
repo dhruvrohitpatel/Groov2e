@@ -413,7 +413,7 @@ export function buildMenuGroups(): MenuGroup[] {
           },
           {
             id: 'help.about',
-            label: 'About Groovy',
+            label: 'About Groov2e',
             run: () => useUiStore.getState().setAboutModalOpen(true),
           },
         ],

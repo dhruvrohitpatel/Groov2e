@@ -35,7 +35,7 @@ const FILE_MENU = [
   { label: 'Revert to Autosave' },
   { sep: true },
   { label: 'Import Audio…',            kb: '⌘I' },
-  { label: 'Export', submenu: ['Mixdown (WAV)…', 'Mixdown (MP3)…', 'Stems…', 'Project Archive (.groovy)…'] },
+  { label: 'Export', submenu: ['Mixdown (WAV)…', 'Mixdown (MP3)…', 'Stems…', 'Project Archive (.groov2e)…'] },
   { sep: true },
   { label: 'Project Settings…' },
   { label: 'Close Project',            kb: '⌘W' },

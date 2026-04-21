@@ -1,4 +1,4 @@
-// Main Groovy app — stitches timeline, transport pill, genie, phone, tweaks.
+// Main Groov2e app — stitches timeline, transport pill, genie, phone, tweaks.
 // Full-bleed. Everything lives on the warm paper surface.
 
 const THEMES = {
@@ -355,7 +355,7 @@ function App() {
         position:'relative', zIndex: 2,
       }}>
         <div style={{display:'flex', alignItems:'center', gap: 14}}>
-          <div style={{fontFamily:'var(--display)', fontSize:22, fontStyle:'italic', letterSpacing:'-0.03em', color: theme.topBarText}}>Groovy</div>
+          <div style={{fontFamily:'var(--display)', fontSize:22, fontStyle:'italic', letterSpacing:'-0.03em', color: theme.topBarText}}>Groov2e</div>
           <div style={{width:1, height:18, background: theme.rule}}/>
           <div style={{fontFamily:'var(--mono)', fontSize:10, color: theme.pillText, letterSpacing:'0.08em', textTransform:'uppercase'}}>
             file · edit · track · view · help

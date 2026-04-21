@@ -1,4 +1,4 @@
-# Groovy — an agentic DAW
+# Groov2e — an agentic DAW
 
 > Jam with the Agent. A browser-based Digital Audio Workstation where the AI is a bandmate, not a chatbot — it can write tracks into your project with Gemini Lyria and edit them through a typed tool layer.
 
@@ -8,7 +8,7 @@
 
 ## What this is
 
-Groovy is a working multi-track audio editor in the browser — timeline, clips, cursor, recording, mixer with VU meters, master analyser, metronome, keyboard shortcuts, drag-and-drop import, persistent project state — plus an in-DAW AI collaborator ("the Genie") that drives the project through **27 typed tools** instead of describing what it would do.
+Groov2e is a working multi-track audio editor in the browser — timeline, clips, cursor, recording, mixer with VU meters, master analyser, metronome, keyboard shortcuts, drag-and-drop import, persistent project state — plus an in-DAW AI collaborator ("the Genie") that drives the project through **27 typed tools** instead of describing what it would do.
 
 Ask it to "generate a punchy 4-bar drum loop and drop it at bar 1" and it will:
 
@@ -33,6 +33,8 @@ The Genie ships with a curated demo set (`src/features/agent/demoPrompts.ts`):
 - `At bar 16 generate a 2-bar riser crescendo on a new 'FX' track, then start playback from bar 14 so I can audition it.`
 - `Turn down the keys track by 3 dB and pan it 15% to the left — it's fighting the lead.`
 - `Set the tempo to 120 BPM, turn the metronome on, and put the cursor at bar 1.`
+
+> Want to know **how the agent actually decides what to do**? See [`FAQ.md`](./FAQ.md) for a per-turn trace, the tool taxonomy, and the prompting/safety story.
 
 ## Architecture at a glance
 

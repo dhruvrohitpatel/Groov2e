@@ -58,9 +58,9 @@ function Shortcuts({ theme, onClose }: { theme: Theme; onClose: () => void }) {
 function About({ theme, onClose }: { theme: Theme; onClose: () => void }) {
   return (
     <>
-      <Header title="About Groovy" onClose={onClose} theme={theme}/>
+      <Header title="About Groov2e" onClose={onClose} theme={theme}/>
       <div style={{ marginTop: 12, fontSize: 12, lineHeight: 1.6, opacity: 0.9 }}>
-        Groovy is an AI-assisted, paper-warm DAW. Jam with the Agent — a
+        Groov2e is an AI-assisted, paper-warm DAW. Jam with the Agent — a
         Gemini-powered collaborator wired directly into the timeline. Ask it
         to add tracks, generate loops, or split a clip at bar 4 and it plays
         along.

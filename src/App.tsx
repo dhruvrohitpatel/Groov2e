@@ -153,7 +153,7 @@ export function App() {
         position: 'relative', zIndex: 2,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          <div style={{ fontFamily: 'var(--display)', fontSize: 22, fontStyle: 'italic', letterSpacing: '-0.03em', color: theme.topBarText }}>Groovy</div>
+          <div style={{ fontFamily: 'var(--display)', fontSize: 22, fontStyle: 'italic', letterSpacing: '-0.03em', color: theme.topBarText }}>Groov2e</div>
           <div style={{ width: 1, height: 18, background: theme.rule }}/>
           <Menubar theme={theme}/>
         </div>

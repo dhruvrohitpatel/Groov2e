@@ -12,7 +12,7 @@ const MENUS = {
       { label: 'Revert to autosave' },
       { sep: true },
       { label: 'Import audio…', shortcut: '⌘I' },
-      { label: 'Export', sub: ['Mixdown (.wav)', 'Mixdown (.mp3)', 'Stems', 'Project archive (.groovy)'] },
+      { label: 'Export', sub: ['Mixdown (.wav)', 'Mixdown (.mp3)', 'Stems', 'Project archive (.groov2e)'] },
       { sep: true },
       { label: 'Project settings…' },
       { label: 'Close project', shortcut: '⌘W' },
@@ -85,7 +85,7 @@ const MENUS = {
       { label: 'Documentation' },
       { sep: true },
       { label: 'Send feedback…' },
-      { label: 'About Groovy' },
+      { label: 'About Groov2e' },
     ],
   },
 };
