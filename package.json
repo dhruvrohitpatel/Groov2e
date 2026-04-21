@@ -1,0 +1,38 @@
+{
+  "name": "groovy",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b --noEmit"
+  },
+  "dependencies": {
+    "@google/genai": "^1.50.1",
+    "@waveform-playlist/browser": "link:/Users/dhruvpatel/Code/Waveform Test/waveform-playlist/packages/browser",
+    "@waveform-playlist/core": "link:/Users/dhruvpatel/Code/Waveform Test/waveform-playlist/packages/core",
+    "@waveform-playlist/engine": "link:/Users/dhruvpatel/Code/Waveform Test/waveform-playlist/packages/engine",
+    "@waveform-playlist/loaders": "link:/Users/dhruvpatel/Code/Waveform Test/waveform-playlist/packages/loaders",
+    "@waveform-playlist/media-element-playout": "link:/Users/dhruvpatel/Code/Waveform Test/waveform-playlist/packages/media-element-playout",
+    "@waveform-playlist/playout": "link:/Users/dhruvpatel/Code/Waveform Test/waveform-playlist/packages/playout",
+    "@waveform-playlist/recording": "link:/Users/dhruvpatel/Code/Waveform Test/waveform-playlist/packages/recording",
+    "@waveform-playlist/ui-components": "link:/Users/dhruvpatel/Code/Waveform Test/waveform-playlist/packages/ui-components",
+    "@waveform-playlist/worklets": "link:/Users/dhruvpatel/Code/Waveform Test/waveform-playlist/packages/worklets",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "styled-components": "^6.4.0",
+    "uuid": "^13.0.0",
+    "waveform-data": "^4.5.2",
+    "zod": "^4.3.6",
+    "zustand": "^5.0.12"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}
