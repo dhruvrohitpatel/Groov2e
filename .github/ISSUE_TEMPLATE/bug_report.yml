@@ -1,0 +1,61 @@
+name: Bug report
+description: Something isn't working as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Fill in as much as you can — it speeds up the fix.
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      placeholder: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      placeholder: What actually happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open the app
+        2. Click …
+        3. …
+    validations:
+      required: true
+
+  - type: input
+    id: browser
+    attributes:
+      label: Browser & OS
+      placeholder: "e.g. Chrome 124 / macOS 14"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: api-key
+    attributes:
+      label: Gemini API key configured?
+      options:
+        - "Yes — key is set in .env.local"
+        - "No — running without key"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: textarea
+    id: console
+    attributes:
+      label: Browser console output (if any)
+      render: text
+      placeholder: Paste any errors from DevTools → Console here.
