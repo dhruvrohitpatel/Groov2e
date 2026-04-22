@@ -81,17 +81,48 @@ function buildStructuredPrompt(prompt: string, opts: GenerateOptions): string {
   return lines.join("\n");
 }
 
+// Scan the head of a decoded buffer for the first frame whose absolute amplitude
+// across any channel crosses the threshold. Lyria frequently hands back 50–300 ms
+// of silence/fade-in before the first musical event, which throws the clip off the
+// grid when we place it at bar boundaries. Trimming that head pulls the first
+// transient onto the downbeat.
+const SILENCE_THRESHOLD = 0.01; // ~ -40 dBFS
+const SILENCE_SCAN_MAX_SECONDS = 0.5;
+const SILENCE_PRE_ATTACK_GUARD_SECONDS = 0.005;
+
+function detectLeadingSilenceFrames(buffer: AudioBuffer): number {
+  const sampleRate = buffer.sampleRate;
+  const maxScan = Math.min(buffer.length, Math.round(SILENCE_SCAN_MAX_SECONDS * sampleRate));
+  const channels = buffer.numberOfChannels;
+
+  for (let i = 0; i < maxScan; i += 1) {
+    for (let c = 0; c < channels; c += 1) {
+      if (Math.abs(buffer.getChannelData(c)[i]) > SILENCE_THRESHOLD) {
+        const guard = Math.round(SILENCE_PRE_ATTACK_GUARD_SECONDS * sampleRate);
+        return Math.max(0, i - guard);
+      }
+    }
+  }
+  return 0;
+}
+
 // Slices a decoded AudioBuffer to the target duration and re-encodes to a
-// 16-bit PCM WAV so downstream `decodeAudioData` can load it anywhere.
-function encodeBufferToWav(buffer: AudioBuffer, seconds: number): { blob: Blob; mimeType: string } {
+// 16-bit PCM WAV so downstream `decodeAudioData` can load it anywhere. The
+// slice starts at `startFrame` so leading silence can be trimmed before encode.
+function encodeBufferToWav(
+  buffer: AudioBuffer,
+  seconds: number,
+  startFrame = 0,
+): { blob: Blob; mimeType: string } {
   const sampleRate = buffer.sampleRate;
   const channels = buffer.numberOfChannels;
-  const frames = Math.min(buffer.length, Math.round(seconds * sampleRate));
+  const available = Math.max(0, buffer.length - startFrame);
+  const frames = Math.min(available, Math.round(seconds * sampleRate));
   const interleaved = new Float32Array(frames * channels);
   for (let c = 0; c < channels; c += 1) {
     const ch = buffer.getChannelData(c);
     for (let i = 0; i < frames; i += 1) {
-      interleaved[i * channels + c] = ch[i];
+      interleaved[i * channels + c] = ch[startFrame + i];
     }
   }
 
@@ -237,8 +268,10 @@ export async function generateMusicClip(prompt: string, opts: GenerateOptions = 
     );
   }
 
-  const usable = targetSeconds ? Math.min(targetSeconds, decoded.duration) : decoded.duration;
-  const { blob: wavBlob, mimeType: wavMime } = encodeBufferToWav(decoded, usable);
+  const silenceFrames = detectLeadingSilenceFrames(decoded);
+  const trimmedDuration = decoded.duration - silenceFrames / decoded.sampleRate;
+  const usable = targetSeconds ? Math.min(targetSeconds, trimmedDuration) : trimmedDuration;
+  const { blob: wavBlob, mimeType: wavMime } = encodeBufferToWav(decoded, usable, silenceFrames);
 
   return {
     blob: wavBlob,

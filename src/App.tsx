@@ -51,6 +51,7 @@ export function App() {
   }, [tweaks.density, tweaks.theme]);
 
   useEffect(() => {
+    localProjectSnapshot.listenForCrossTabChanges();
     const snapshot = localProjectSnapshot.load();
     if (!snapshot) return;
 

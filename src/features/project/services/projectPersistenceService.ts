@@ -297,6 +297,7 @@ export const projectPersistenceService = new ProjectPersistenceService();
 const LOCAL_SNAPSHOT_KEY = "groovy.v2.snapshot.v1";
 
 interface LocalSnapshotShape {
+  version: number;
   project: ReturnType<typeof useGroovyStore.getState>["project"];
   tracks: ReturnType<typeof useGroovyStore.getState>["tracks"];
   clips: Record<string, Clip>;
@@ -308,6 +309,8 @@ interface LocalSnapshotShape {
 }
 
 export const localProjectSnapshot = {
+  _lastSavedVersion: 0,
+
   save() {
     if (typeof window === "undefined") return;
     try {
@@ -318,7 +321,9 @@ export const localProjectSnapshot = {
           persistableClips[id] = clip;
         }
       }
+      const nextVersion = this._lastSavedVersion + 1;
       const snapshot: LocalSnapshotShape = {
+        version: nextVersion,
         project: state.project,
         tracks: state.tracks,
         clips: persistableClips,
@@ -329,6 +334,7 @@ export const localProjectSnapshot = {
         transport: { metronomeEnabled: state.transport.metronomeEnabled },
       };
       window.localStorage.setItem(LOCAL_SNAPSHOT_KEY, JSON.stringify(snapshot));
+      this._lastSavedVersion = nextVersion;
     } catch (err) {
       if (err instanceof DOMException && err.name === "QuotaExceededError") {
         import("../../../store/useUiStore").then(({ useUiStore }) => {
@@ -343,7 +349,9 @@ export const localProjectSnapshot = {
     try {
       const raw = window.localStorage.getItem(LOCAL_SNAPSHOT_KEY);
       if (!raw) return null;
-      return JSON.parse(raw) as LocalSnapshotShape;
+      const snapshot = JSON.parse(raw) as LocalSnapshotShape;
+      this._lastSavedVersion = snapshot.version ?? 0;
+      return snapshot;
     } catch {
       return null;
     }
@@ -352,5 +360,25 @@ export const localProjectSnapshot = {
   clear() {
     if (typeof window === "undefined") return;
     window.localStorage.removeItem(LOCAL_SNAPSHOT_KEY);
+    this._lastSavedVersion = 0;
+  },
+
+  listenForCrossTabChanges() {
+    if (typeof window === "undefined") return;
+    window.addEventListener("storage", (event) => {
+      if (event.key !== LOCAL_SNAPSHOT_KEY || event.newValue === null) return;
+      try {
+        const incoming = JSON.parse(event.newValue) as LocalSnapshotShape;
+        // Only notify if the version advanced beyond what this tab last wrote.
+        if ((incoming.version ?? 0) > this._lastSavedVersion) {
+          import("../../../store/useUiStore").then(({ useUiStore }) => {
+            useUiStore.getState().showToast(
+              "Another tab saved changes to this project. Reload to get the latest state.",
+              "warn",
+            );
+          });
+        }
+      } catch { /* ignore malformed storage events */ }
+    });
   },
 };

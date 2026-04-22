@@ -14,6 +14,7 @@ export interface RecordingStopResult {
 }
 
 const MIME_TYPE_CANDIDATES = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
+const GET_USER_MEDIA_TIMEOUT_MS = 10_000;
 
 // This service owns only the browser-media capture pipeline.
 // The app still owns transport state and clip insertion, so a prepared recorder
@@ -27,6 +28,7 @@ class RecordingService {
   private startedAtMs: number | null = null;
   private preparedInputDeviceId: string | null = null;
   private preparedMimeType = "audio/webm";
+  onStreamLost: (() => void) | null = null;
 
   isSupported(): boolean {
     return Boolean(navigator.mediaDevices?.getUserMedia) && typeof MediaRecorder !== "undefined";
@@ -46,7 +48,16 @@ class RecordingService {
       video: false,
     };
 
-    const mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+    const mediaStream = await Promise.race([
+      navigator.mediaDevices.getUserMedia(constraints),
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error("Microphone access timed out after 10 s. Check browser permissions.")),
+          GET_USER_MEDIA_TIMEOUT_MS,
+        )
+      ),
+    ]);
+
     const mimeType = pickSupportedMimeType();
     const mediaRecorder = mimeType
       ? new MediaRecorder(mediaStream, { mimeType })
@@ -58,6 +69,11 @@ class RecordingService {
     this.startedAtMs = null;
     this.preparedInputDeviceId = options.inputDeviceId;
     this.preparedMimeType = mediaRecorder.mimeType || mimeType || "audio/webm";
+
+    mediaStream.addEventListener("inactive", this.handleStreamLost);
+    for (const track of mediaStream.getTracks()) {
+      track.addEventListener("ended", this.handleStreamLost);
+    }
 
     mediaRecorder.addEventListener("dataavailable", this.handleDataAvailable);
     mediaRecorder.addEventListener("error", this.handleRecorderError);
@@ -161,12 +177,25 @@ class RecordingService {
       this.mediaRecorder.removeEventListener("error", this.handleRecorderError);
     }
 
-    this.mediaStream?.getTracks().forEach((track) => track.stop());
+    if (this.mediaStream) {
+      this.mediaStream.removeEventListener("inactive", this.handleStreamLost);
+      for (const track of this.mediaStream.getTracks()) {
+        track.removeEventListener("ended", this.handleStreamLost);
+        track.stop();
+      }
+    }
     this.mediaStream = null;
     this.mediaRecorder = null;
     this.preparedInputDeviceId = null;
     this.preparedMimeType = "audio/webm";
   }
+
+  private handleStreamLost = () => {
+    this.onStreamLost?.();
+    this.cleanup();
+    this.chunks = [];
+    this.startedAtMs = null;
+  };
 
   private handleDataAvailable = (event: BlobEvent) => {
     if (event.data.size > 0) {

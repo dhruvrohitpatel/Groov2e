@@ -26,6 +26,7 @@ function buildTrackClip(
     offset: clip.sourceOffset,
     name: clip.name,
     color: trackColor,
+    gain: clip.muted ? 0 : 1,
   });
 
   waveformClip.id = clip.id;
@@ -82,7 +83,7 @@ function computeTrackSignature(
     .map((clip) => {
       const key = getClipSourceKey(clip);
       const hasBuffer = Boolean(buffersBySource[key]);
-      return `${clip.id}|${key}|${hasBuffer ? 1 : 0}|${clip.startTime}|${clip.duration}|${clip.sourceOffset}|${clip.name}`;
+      return `${clip.id}|${key}|${hasBuffer ? 1 : 0}|${clip.startTime}|${clip.duration}|${clip.sourceOffset}|${clip.name}|${clip.muted ? 1 : 0}`;
     })
     .join(",");
 

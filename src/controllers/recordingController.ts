@@ -11,6 +11,7 @@ import { getBarDurationSeconds, getBeatDurationSeconds } from "../features/timel
 import { createId } from "../lib/id";
 import { estimateUsage } from "../features/project/services/audioBlobStore";
 import { useUiStore } from "../store/useUiStore";
+import { MAX_RECORDING_MS } from "../lib/constants";
 
 function startMetronomeAtCursor(startTimeSeconds: number) {
   const state = useGroovyStore.getState();
@@ -31,6 +32,7 @@ const BEATS_PER_BAR = 4;
 export const recordingController = {
   countInTimeoutId: null as number | null,
   countInIntervalId: null as number | null,
+  maxRecordingTimeoutId: null as number | null,
 
   clearCountInTimers() {
     if (this.countInTimeoutId !== null) {
@@ -76,6 +78,11 @@ export const recordingController = {
         );
       }
     } catch { /* estimate is best-effort */ }
+
+    recordingService.onStreamLost = () => {
+      useUiStore.getState().showToast("Microphone was disconnected — recording stopped.", "error");
+      void this.stopRecording();
+    };
 
     try {
       await recordingService.prepare({
@@ -173,10 +180,16 @@ export const recordingController = {
     // this original cursor, not any count-in wall clock offset.
     state.startRecordingSession(startTime, state.devices.selectedInputId);
     state.setTransportStatus("playing");
+
+    this.maxRecordingTimeoutId = window.setTimeout(() => {
+      useUiStore.getState().showToast("Maximum recording length reached — stopping.", "warn");
+      void this.stopRecording();
+    }, MAX_RECORDING_MS);
   },
 
   handleRecordingStartFailure(error: unknown) {
     this.clearCountInTimers();
+    this.clearMaxRecordingTimer();
     metronomeService.stop();
     audioService.stop();
     recordingService.cancel();
@@ -188,8 +201,16 @@ export const recordingController = {
     state.setTransportStatus("stopped");
   },
 
+  clearMaxRecordingTimer() {
+    if (this.maxRecordingTimeoutId !== null) {
+      window.clearTimeout(this.maxRecordingTimeoutId);
+      this.maxRecordingTimeoutId = null;
+    }
+  },
+
   async stopRecording() {
     this.clearCountInTimers();
+    this.clearMaxRecordingTimer();
 
     const state = useGroovyStore.getState();
 

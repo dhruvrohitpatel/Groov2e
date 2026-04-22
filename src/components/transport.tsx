@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { Theme } from '../types';
 import type { MusicalKey } from '../types/models';
 import { formatBarsBeats, formatTime } from '../lib/formatters';
@@ -24,6 +25,10 @@ export function TransportPill({ theme, onLampClick, genieActive }: Props) {
   const metronomeEnabled = useGroovyStore((s) => s.transport.metronomeEnabled);
   const cursorPosition = useGroovyStore((s) => s.cursorPosition);
   const isRecording = useGroovyStore((s) => s.recording.isRecording);
+  const countInEnabled = useGroovyStore((s) => s.recording.countInEnabled);
+  const isCountInActive = useGroovyStore((s) => s.recording.isCountInActive);
+  const countInBeatsRemaining = useGroovyStore((s) => s.recording.countInBeatsRemaining);
+  const setCountInEnabled = useGroovyStore((s) => s.setCountInEnabled);
   const mixerOpen = useUiStore((s) => s.tweaks.mixer);
 
   const playing = transportStatus === 'playing';
@@ -93,6 +98,37 @@ export function TransportPill({ theme, onLampClick, genieActive }: Props) {
       <PillBtnBig on={metronomeEnabled} onClick={handleMetronome} theme={theme}>
         <Icon.Metronome c={metronomeEnabled ? theme.accent : theme.pillTextStrong}/>
       </PillBtnBig>
+
+      <button
+        onClick={() => setCountInEnabled(!countInEnabled)}
+        title={countInEnabled ? 'Count-in: on (1 bar)' : 'Count-in: off'}
+        style={{
+          padding: '0 12px',
+          background: isCountInActive
+            ? theme.accent
+            : countInEnabled
+              ? theme.metroOn
+              : 'transparent',
+          border: 'none',
+          cursor: 'pointer',
+          borderRight: `1px solid ${theme.pillDivider}`,
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+          gap: 1, minWidth: 44,
+          fontFamily: 'var(--mono)',
+          color: isCountInActive
+            ? '#fff'
+            : countInEnabled
+              ? theme.accent
+              : theme.pillTextStrong,
+        }}
+      >
+        <div style={{ fontSize: 8.5, letterSpacing: '0.1em', textTransform: 'uppercase', opacity: 0.85 }}>
+          count
+        </div>
+        <div style={{ fontSize: 13, fontVariantNumeric: 'tabular-nums', lineHeight: 1 }}>
+          {isCountInActive && countInBeatsRemaining !== null ? countInBeatsRemaining : '1'}
+        </div>
+      </button>
 
       <button onClick={onLampClick} title="Jam with the Agent" style={{
         padding: '0 18px',
@@ -237,46 +273,208 @@ function KeyStat({ theme }: { theme: Theme }) {
   const musicalKey = useGroovyStore((s) => s.project.key);
   const setKey = useGroovyStore((s) => s.setKey);
   const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const [anchor, setAnchor] = useState<
+    { left: number; top?: number; bottom?: number } | null
+  >(null);
+
+  const MENU_MAX_HEIGHT = 320;
+  /** Above wfpl / modals / mixer — menu is portaled to `document.body`. */
+  const MENU_Z = 10_000;
+
+  const computeAnchor = useCallback(() => {
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (!rect) return null;
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const spaceAbove = rect.top;
+    if (spaceBelow < MENU_MAX_HEIGHT && spaceAbove > spaceBelow) {
+      return { left: rect.left, bottom: window.innerHeight - rect.top + 4 };
+    }
+    return { left: rect.left, top: rect.bottom + 4 };
+  }, []);
+
+  const close = useCallback(() => {
+    setOpen(false);
+    setAnchor(null);
+  }, []);
 
   useEffect(() => {
     if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    const place = () => {
+      const next = computeAnchor();
+      if (next) setAnchor(next);
     };
-    const t = setTimeout(() => window.addEventListener('click', onDoc), 0);
-    return () => { clearTimeout(t); window.removeEventListener('click', onDoc); };
-  }, [open]);
+    place();
+    const onScroll = () => close();
+    const onDoc = (e: MouseEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+      if (triggerRef.current?.contains(target)) return;
+      const menu = document.getElementById('key-stat-menu');
+      if (menu?.contains(target)) return;
+      close();
+    };
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', onScroll, true);
+    const t = window.setTimeout(() => window.addEventListener('mousedown', onDoc), 0);
+    return () => {
+      window.clearTimeout(t);
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('mousedown', onDoc);
+    };
+  }, [open, close, computeAnchor]);
+
+  const majors = MUSICAL_KEYS.filter((k) => k.endsWith('major'));
+  const minors = MUSICAL_KEYS.filter((k) => k.endsWith('minor'));
+
+  const toggle = () => {
+    if (open) {
+      close();
+      return;
+    }
+    const next = computeAnchor();
+    if (!next) return;
+    setAnchor(next);
+    setOpen(true);
+  };
+
+  // Never nest the dropdown (or its option buttons) inside the trigger `<button>` —
+  // that's invalid HTML; browsers rewrite the DOM and clicks / aria updates break.
+  const menu =
+    open && anchor ? (
+      <div
+        id="key-stat-menu"
+        role="listbox"
+        onMouseDown={(e) => e.stopPropagation()}
+        style={{
+          position: 'fixed',
+          left: anchor.left,
+          top: anchor.top,
+          bottom: anchor.bottom,
+          zIndex: MENU_Z,
+          background: theme.pillBg,
+          border: `1px solid ${theme.pillBorder}`,
+          borderRadius: 8,
+          boxShadow: '0 16px 40px rgba(20,18,16,0.28)',
+          padding: 6,
+          display: 'grid',
+          gridTemplateColumns: '1fr 1fr',
+          gap: 4,
+          minWidth: 220,
+          maxHeight: MENU_MAX_HEIGHT,
+          overflowY: 'auto',
+        }}
+      >
+        <KeyColumn
+          label="Major"
+          keys={majors}
+          current={musicalKey}
+          theme={theme}
+          onPick={(k) => {
+            setKey(k);
+            close();
+          }}
+        />
+        <KeyColumn
+          label="Minor"
+          keys={minors}
+          current={musicalKey}
+          theme={theme}
+          onPick={(k) => {
+            setKey(k);
+            close();
+          }}
+        />
+      </div>
+    ) : null;
 
   return (
-    <div ref={wrapRef} style={{
-      padding: 'var(--transport-pad, 12px) 14px', display: 'flex', flexDirection: 'column', gap: 1,
-      borderRight: `1px solid ${theme.pillDivider}`, minWidth: 56, position: 'relative',
-    }}>
-      <div style={{ fontSize: 9, opacity: 0.55, textTransform: 'uppercase' }}>key</div>
-      <button
-        onClick={() => setOpen((o) => !o)}
+    <>
+      <div
         style={{
-          fontFamily: 'var(--display)', fontSize: 14, color: theme.pillTextStrong,
-          letterSpacing: '-0.01em', background: 'transparent',
-          border: 'none', outline: 'none', padding: 0, cursor: 'pointer', textAlign: 'left',
+          padding: 'var(--transport-pad, 12px) 14px',
+          display: 'flex',
+          flexDirection: 'column',
+          justifyContent: 'center',
+          borderRight: `1px solid ${theme.pillDivider}`,
+          minWidth: 56,
+          background: open ? theme.pillDivider : 'transparent',
         }}
-      >{musicalKey}</button>
-      {open && (
-        <div style={{
-          position: 'absolute', top: '100%', left: 0, zIndex: 40, marginTop: 2,
-          background: theme.pillBg, border: `1px solid ${theme.pillBorder}`, borderRadius: 6,
-          boxShadow: '0 12px 36px rgba(20,18,16,0.22)', minWidth: 140, padding: 4,
-        }}>
-          {MUSICAL_KEYS.map((k: MusicalKey) => (
-            <div key={k} onClick={() => { setKey(k); setOpen(false); }} style={{
-              padding: '6px 10px', borderRadius: 4, cursor: 'pointer',
-              fontFamily: 'var(--display)', fontSize: 13, color: theme.pillTextStrong,
-              background: k === musicalKey ? theme.pillDivider : 'transparent',
-            }}>{k}</div>
-          ))}
-        </div>
-      )}
+      >
+        <button
+          type="button"
+          ref={triggerRef}
+          onClick={toggle}
+          title="Change project key"
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 1,
+            alignItems: 'flex-start',
+            background: 'transparent',
+            border: 'none',
+            outline: 'none',
+            cursor: 'pointer',
+            textAlign: 'left',
+            font: 'inherit',
+            color: 'inherit',
+            padding: 0,
+            width: '100%',
+          }}
+        >
+          <div style={{ fontSize: 9, opacity: 0.55, textTransform: 'uppercase' }}>key</div>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'baseline',
+              gap: 4,
+              fontFamily: 'var(--display)',
+              fontSize: 14,
+              color: theme.pillTextStrong,
+              letterSpacing: '-0.01em',
+            }}
+          >
+            <span>{musicalKey}</span>
+            <span style={{ fontSize: 8, opacity: 0.5, transform: 'translateY(-1px)' }}>▾</span>
+          </div>
+        </button>
+      </div>
+      {menu ? createPortal(menu, document.body) : null}
+    </>
+  );
+}
+
+function KeyColumn({ label, keys, current, theme, onPick }: {
+  label: string; keys: MusicalKey[]; current: MusicalKey; theme: Theme;
+  onPick: (k: MusicalKey) => void;
+}) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <div style={{
+        fontFamily: 'var(--mono)', fontSize: 9, letterSpacing: '0.1em',
+        textTransform: 'uppercase', opacity: 0.5, color: theme.pillText,
+        padding: '2px 6px 4px',
+      }}>{label}</div>
+      {keys.map((k) => (
+        <button
+          type="button"
+          key={k}
+          onClick={() => onPick(k)}
+          role="option"
+          aria-selected={k === current}
+          style={{
+            padding: '5px 8px', borderRadius: 4, cursor: 'pointer',
+            fontFamily: 'var(--display)', fontSize: 13,
+            color: theme.pillTextStrong,
+            background: k === current ? theme.pillDivider : 'transparent',
+            border: 'none', textAlign: 'left',
+            fontVariantNumeric: 'tabular-nums',
+          }}
+        >{k.replace(/ (major|minor)$/, (_, mode) => (mode === 'major' ? '' : 'm'))}</button>
+      ))}
     </div>
   );
 }

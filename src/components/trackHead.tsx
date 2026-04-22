@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Track } from '../types/models';
 import type { Theme } from '../types';
 import { INPUT_SOURCES, OUTPUT_SOURCES } from '../lib/constants';
 import { Icon } from './icons';
 import { Knob, MiniFader, PanSlider, fmtDb, fmtGain, fmtPan } from './controls';
 import { trackController } from '../controllers/trackController';
+import { trackMeterRegistry } from '../features/timeline/lib/trackMeters';
+import { useMeterLevels } from './mixer/useMeterLevels';
 
 const TRACK_COLOR_FALLBACK = '#C89A4B';
 
@@ -62,17 +64,23 @@ function IOPill({ label, value, options, onChange, theme, active }: {
   );
 }
 
-function Meter({ vol, muted, color, bg, border, height = 42 }: {
-  vol: number; muted: boolean; color: string; bg: string; border: string; height?: number;
+// Real-time VU meter tapped off the wfpl track's post-fader signal via
+// trackMeterRegistry (see features/timeline/lib/trackMeters.ts). Silent when
+// the track is muted or before the audio graph is built. Peak-hold tick sits
+// above the RMS bar and goes red when clipping.
+function Meter({ trackId, muted, color, bg, border, height = 42 }: {
+  trackId: string; muted: boolean; color: string; bg: string; border: string; height?: number;
 }) {
-  const [level, setLevel] = useState(0);
-  useEffect(() => {
-    if (muted) { setLevel(0); return; }
-    const id = setInterval(() => {
-      setLevel(Math.min(1, vol * (0.6 + Math.random() * 0.5)));
-    }, 90);
-    return () => clearInterval(id);
-  }, [vol, muted]);
+  const getAnalyser = useCallback(
+    () =>
+      trackMeterRegistry.getMeter(trackId) as unknown as {
+        getValue: () => number | Float32Array | number[];
+      } | null,
+    [trackId],
+  );
+  const levels = useMeterLevels(getAnalyser);
+  const rmsPct = muted ? 0 : Math.max(0, Math.min(1, levels.rms));
+  const peakPct = muted ? 0 : Math.max(0, Math.min(1, levels.peak));
   return (
     <div style={{
       width: 6, height, background: bg, borderRadius: 1,
@@ -80,10 +88,19 @@ function Meter({ vol, muted, color, bg, border, height = 42 }: {
     }}>
       <div style={{
         position: 'absolute', left: 0, right: 0, bottom: 0,
-        height: `${level * 100}%`,
+        height: `${rmsPct * 100}%`,
         background: `linear-gradient(to top, ${color} 0%, ${color} 60%, #C89A4B 80%, #B3261E 100%)`,
-        transition: 'height 80ms linear',
+        transition: 'height 70ms linear',
       }}/>
+      {peakPct > 0.02 ? (
+        <div style={{
+          position: 'absolute', left: 0, right: 0,
+          bottom: `calc(${peakPct * 100}% - 1px)`,
+          height: 1,
+          background: peakPct > 0.95 ? '#B3261E' : '#E8D4AC',
+          opacity: 0.9,
+        }}/>
+      ) : null}
     </div>
   );
 }
@@ -175,7 +192,7 @@ export function TrackHead({ track, theme, selected, height }: Props) {
         <div style={{ flex: 1 }}/>
         <div onClick={(e) => e.stopPropagation()} style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
           <MiniFader value={vol} onChange={(v) => trackController.updateTrack(track.id, { vol: v, volume: v })} theme={theme} color={color} height={Math.max(28, (height ?? 84) - 50)}/>
-          <Meter vol={vol} muted={track.muted} color={color} bg={theme.clipBg} border={theme.pillDivider} height={Math.max(28, (height ?? 84) - 50)}/>
+          <Meter trackId={track.id} muted={track.muted} color={color} bg={theme.clipBg} border={theme.pillDivider} height={Math.max(28, (height ?? 84) - 50)}/>
           <div style={{ fontFamily: 'var(--mono)', fontSize: 9, color: theme.trackSub, width: 32, textAlign: 'right', letterSpacing: '0.02em', fontVariantNumeric: 'tabular-nums' }}>
             {fmtDb(vol)}
           </div>
