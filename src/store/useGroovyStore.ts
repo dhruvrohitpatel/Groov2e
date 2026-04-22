@@ -13,6 +13,7 @@ import type {
 } from "../types/models";
 import { getTimelineZoomPxPerSecond } from "../features/timeline/lib/timelineMath";
 import { createId } from "../lib/id";
+import { sanitizeName } from "../lib/constants";
 import { createInitialGroovyState } from "../lib/mockProject";
 import type { PersistedClipLoadResult } from "../features/project/types";
 import type { AgentSnapshot, GroovyStoreStatePublic } from "./stateTypes";
@@ -501,7 +502,7 @@ export const useGroovyStore = create<GroovyStore>((set, get) => ({
     set((state) => ({
       project: {
         ...state.project,
-        name: name.trim() || state.project.name,
+        name: sanitizeName(name) || state.project.name,
       },
     })),
 
@@ -623,7 +624,7 @@ export const useGroovyStore = create<GroovyStore>((set, get) => ({
     }),
 
   addTrack: (name) => {
-    const trackName = name?.trim() || `Track ${get().tracks.length + 1}`;
+    const trackName = (name ? sanitizeName(name) : "") || `Track ${get().tracks.length + 1}`;
     const nextTrack = buildTrack(trackName);
 
     set((state) => ({
@@ -721,7 +722,9 @@ export const useGroovyStore = create<GroovyStore>((set, get) => ({
   updateTrack: (trackId, patch) =>
     set((state) => ({
       tracks: state.tracks.map((track) =>
-        track.id === trackId ? { ...track, ...patch } : track,
+        track.id === trackId
+          ? { ...track, ...patch, name: patch.name !== undefined ? (sanitizeName(patch.name) || track.name) : track.name }
+          : track,
       ),
     })),
 

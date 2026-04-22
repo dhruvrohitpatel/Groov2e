@@ -2,6 +2,7 @@ import { GoogleGenAI, type Chat, type Content, type FunctionCall, type Part } fr
 import { buildGeminiFunctionDeclarations } from "../tools/toolSchemas";
 import { executeTool, type ToolExecution } from "../tools/toolRouter";
 import { buildProjectSnapshot } from "../tools/agentTools";
+import { sanitizeName } from "../../../lib/constants";
 
 const API_KEY = (import.meta.env.VITE_GEMINI_API_KEY as string | undefined) ?? undefined;
 const CHAT_MODEL = (import.meta.env.VITE_GEMINI_CHAT_MODEL as string | undefined) ?? "gemini-2.5-flash";
@@ -47,14 +48,18 @@ function getClient(): GoogleGenAI {
 
 function contextPreamble(): string {
   const summary = buildProjectSnapshot();
+  // Sanitize user-supplied strings before interpolating into the LLM context
+  // to prevent prompt injection via crafted project/track names (H2).
+  const safeName = sanitizeName(summary.name);
+  const safeKey = sanitizeName(summary.key);
   return [
     "Current project snapshot:",
-    `• Name: ${summary.name}`,
-    `• BPM: ${summary.bpm}, Key: ${summary.key}`,
+    `• Name: ${safeName}`,
+    `• BPM: ${summary.bpm}, Key: ${safeKey}`,
     `• Cursor: bar ${summary.cursorBar.toFixed(2)} (${summary.cursorSeconds.toFixed(2)}s)`,
     `• Transport: ${summary.transportStatus}`,
     `• Tracks: ${summary.tracks.length === 0 ? "(none yet)" : summary.tracks
-      .map((t) => `${t.name}[${t.clipCount} clips]`)
+      .map((t) => `${sanitizeName(t.name)}[${t.clipCount} clips]`)
       .join(", ")}`,
   ].join("\n");
 }
