@@ -66,7 +66,6 @@
     "@dnd-kit/abstract": "^0.3.0",
     "@dnd-kit/dom": "^0.3.0",
     "@dnd-kit/react": "^0.3.0",
-    "@waveform-playlist/annotations": "workspace:*",
     "@waveform-playlist/recording": "workspace:*",
     "react": "^18.2.0 || ^19.0.0",
     "react-dom": "^18.2.0 || ^19.0.0",
@@ -74,9 +73,6 @@
     "tone": "^15.0.0"
   },
   "peerDependenciesMeta": {
-    "@waveform-playlist/annotations": {
-      "optional": true
-    },
     "@waveform-playlist/recording": {
       "optional": true
     }
