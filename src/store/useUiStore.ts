@@ -112,8 +112,10 @@ if (typeof window !== 'undefined') {
   useUiStore.subscribe((state) => {
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state.tweaks));
-    } catch {
-      // ignore quota errors
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "QuotaExceededError") {
+        useUiStore.getState().showToast("Storage full — delete projects to continue.", "error");
+      }
     }
   });
 }

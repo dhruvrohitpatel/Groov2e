@@ -329,8 +329,12 @@ export const localProjectSnapshot = {
         transport: { metronomeEnabled: state.transport.metronomeEnabled },
       };
       window.localStorage.setItem(LOCAL_SNAPSHOT_KEY, JSON.stringify(snapshot));
-    } catch {
-      // ignore
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "QuotaExceededError") {
+        import("../../../store/useUiStore").then(({ useUiStore }) => {
+          useUiStore.getState().showToast("Storage full — delete projects to continue.", "error");
+        });
+      }
     }
   },
 

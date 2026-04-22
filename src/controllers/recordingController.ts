@@ -9,6 +9,8 @@ import {
 } from "../features/project/services/projectPersistenceService";
 import { getBarDurationSeconds, getBeatDurationSeconds } from "../features/timeline/lib/timelineMath";
 import { createId } from "../lib/id";
+import { estimateUsage } from "../features/project/services/audioBlobStore";
+import { useUiStore } from "../store/useUiStore";
 
 function startMetronomeAtCursor(startTimeSeconds: number) {
   const state = useGroovyStore.getState();
@@ -61,6 +63,19 @@ export const recordingController = {
   async startRecording() {
     const state = useGroovyStore.getState();
     const originalCursor = state.cursorPosition;
+
+    // Warn (but don't block) if storage is nearly full or quota is zero (Safari private mode).
+    try {
+      const { used, quota } = await estimateUsage();
+      if (quota === 0 || (quota > 0 && used / quota > 0.8)) {
+        useUiStore.getState().showToast(
+          quota === 0
+            ? "Storage unavailable — recordings may not be saved (private browsing?)."
+            : "Storage nearly full — recordings may fail to save.",
+          "warn",
+        );
+      }
+    } catch { /* estimate is best-effort */ }
 
     try {
       await recordingService.prepare({

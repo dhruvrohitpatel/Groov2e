@@ -646,7 +646,17 @@ const generation_generateAndInsertClip: ToolDefinition<
 
     // Persist to IndexedDB so the clip survives a page reload (M5 fix).
     // The registry creates exactly one blob URL per clip for the current session.
-    await putBlob(clipId, result.blob);
+    try {
+      await putBlob(clipId, result.blob);
+    } catch (err) {
+      const isQuota = err instanceof DOMException && err.name === "QuotaExceededError";
+      return {
+        ok: false,
+        message: isQuota
+          ? "Storage full — delete projects to continue, then try again."
+          : "Failed to save audio to local storage.",
+      };
+    }
     const fileUrl = getOrCreateUrl(clipId, result.blob);
 
     const nextClip: Clip = {
