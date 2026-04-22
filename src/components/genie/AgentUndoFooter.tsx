@@ -14,10 +14,7 @@ export function AgentUndoFooter({ theme }: Props) {
   const undo = () => {
     const reverted = useGroovyStore.getState().undoLastAgentChange();
     if (reverted) {
-      useUiStore.getState().pushToast({
-        kind: 'info',
-        message: `Undid "${reverted.label}"`,
-      });
+      useUiStore.getState().showToast(`Undid "${reverted.label}"`, 'info');
     }
   };
 

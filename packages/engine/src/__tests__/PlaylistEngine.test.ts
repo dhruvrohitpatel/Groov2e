@@ -1,0 +1,1549 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { ClipTrack, AudioClip } from '@waveform-playlist/core';
+import { PlaylistEngine } from '../PlaylistEngine';
+import type { PlayoutAdapter } from '../types';
+
+function makeClip(
+  overrides: Partial<AudioClip> & {
+    id: string;
+    startSample: number;
+    durationSamples: number;
+  }
+): AudioClip {
+  return {
+    offsetSamples: 0,
+    sampleRate: 44100,
+    sourceDurationSamples: 441000,
+    gain: 1,
+    ...overrides,
+  };
+}
+
+function makeTrack(id: string, clips: AudioClip[]): ClipTrack {
+  return {
+    id,
+    name: `Track ${id}`,
+    clips,
+    muted: false,
+    soloed: false,
+    volume: 1,
+    pan: 0,
+  };
+}
+
+function createMockAdapter(): PlayoutAdapter {
+  return {
+    init: vi.fn().mockResolvedValue(undefined),
+    setTracks: vi.fn(),
+    play: vi.fn(),
+    pause: vi.fn(),
+    stop: vi.fn(),
+    seek: vi.fn(),
+    getCurrentTime: vi.fn().mockReturnValue(0),
+    isPlaying: vi.fn().mockReturnValue(false),
+    setMasterVolume: vi.fn(),
+    setTrackVolume: vi.fn(),
+    setTrackMute: vi.fn(),
+    setTrackSolo: vi.fn(),
+    setTrackPan: vi.fn(),
+    setLoop: vi.fn(),
+    setTempo: vi.fn(),
+    ticksToSeconds: vi.fn((tick: number) => (tick * 60) / (960 * 120)),
+    secondsToTicks: vi.fn((seconds: number) => Math.round((seconds * 960 * 120) / 60)),
+    dispose: vi.fn(),
+  };
+}
+
+describe('PlaylistEngine', () => {
+  describe('construction', () => {
+    it('initializes with defaults', () => {
+      const engine = new PlaylistEngine();
+      const state = engine.getState();
+      expect(state.tracks).toEqual([]);
+      expect(state.sampleRate).toBe(48000);
+      expect(state.samplesPerPixel).toBe(1024);
+      expect(state.isPlaying).toBe(false);
+      expect(state.currentTime).toBe(0);
+      expect(state.selectedTrackId).toBeNull();
+      engine.dispose();
+    });
+
+    it('accepts custom options', () => {
+      const engine = new PlaylistEngine({
+        sampleRate: 48000,
+        samplesPerPixel: 512,
+        zoomLevels: [256, 512, 1024],
+      });
+      const state = engine.getState();
+      expect(state.sampleRate).toBe(48000);
+      expect(state.samplesPerPixel).toBe(512);
+      engine.dispose();
+    });
+
+    it('throws on empty zoomLevels', () => {
+      expect(() => new PlaylistEngine({ zoomLevels: [] })).toThrow('zoomLevels must not be empty');
+    });
+
+    it('throws when samplesPerPixel is not in zoomLevels', () => {
+      expect(() => new PlaylistEngine({ samplesPerPixel: 1500 })).toThrow(
+        'samplesPerPixel 1500 is not in zoomLevels'
+      );
+    });
+
+    it('returns a defensive copy of tracks from getState', () => {
+      const engine = new PlaylistEngine();
+      const clip = makeClip({ id: 'c1', startSample: 0, durationSamples: 44100 });
+      engine.setTracks([makeTrack('t1', [clip])]);
+
+      const state1 = engine.getState();
+      const state2 = engine.getState();
+      // Same content but different references
+      expect(state1.tracks).toEqual(state2.tracks);
+      expect(state1.tracks).not.toBe(state2.tracks);
+      expect(state1.tracks[0]).not.toBe(state2.tracks[0]);
+      engine.dispose();
+    });
+  });
+
+  describe('track management', () => {
+    let engine: PlaylistEngine;
+    beforeEach(() => {
+      engine = new PlaylistEngine();
+    });
+
+    it('sets tracks and emits statechange', () => {
+      const listener = vi.fn();
+      engine.on('statechange', listener);
+      const tracks = [
+        makeTrack('t1', [makeClip({ id: 'c1', startSample: 0, durationSamples: 44100 })]),
+      ];
+      engine.setTracks(tracks);
+      // setTracks enriches clips with startTick, so stored tracks differ from input
+      const state = engine.getState();
+      expect(state.tracks).toHaveLength(1);
+      expect(state.tracks[0].id).toBe('t1');
+      expect(state.tracks[0].clips[0].id).toBe('c1');
+      expect(state.duration).toBe(1);
+      expect(listener).toHaveBeenCalledTimes(1);
+      engine.dispose();
+    });
+
+    it('adds a track', () => {
+      engine.addTrack(makeTrack('t1', []));
+      expect(engine.getState().tracks).toHaveLength(1);
+      engine.dispose();
+    });
+
+    it('addTrack uses adapter.addTrack when available', () => {
+      const mockAddTrack = vi.fn();
+      const mockSetTracks = vi.fn();
+      const adapter = {
+        init: vi.fn().mockResolvedValue(undefined),
+        setTracks: mockSetTracks,
+        addTrack: mockAddTrack,
+        play: vi.fn(),
+        pause: vi.fn(),
+        stop: vi.fn(),
+        seek: vi.fn(),
+        getCurrentTime: vi.fn().mockReturnValue(0),
+        isPlaying: vi.fn().mockReturnValue(false),
+        setMasterVolume: vi.fn(),
+        setTrackVolume: vi.fn(),
+        setTrackMute: vi.fn(),
+        setTrackSolo: vi.fn(),
+        setTrackPan: vi.fn(),
+        setLoop: vi.fn(),
+        dispose: vi.fn(),
+      };
+      const eng = new PlaylistEngine({ adapter });
+      eng.setTracks([makeTrack('t1', [])]);
+      mockSetTracks.mockClear();
+
+      eng.addTrack(makeTrack('t2', []));
+
+      // Uses incremental addTrack, not setTracks
+      expect(mockAddTrack).toHaveBeenCalledTimes(1);
+      expect(mockSetTracks).not.toHaveBeenCalled();
+      expect(eng.getState().tracks).toHaveLength(2);
+      eng.dispose();
+    });
+
+    it('removes a track', () => {
+      engine.setTracks([makeTrack('t1', [])]);
+      engine.removeTrack('t1');
+      expect(engine.getState().tracks).toHaveLength(0);
+      engine.dispose();
+    });
+
+    it('clears selection when selected track is removed', () => {
+      engine.setTracks([makeTrack('t1', [])]);
+      engine.selectTrack('t1');
+      engine.removeTrack('t1');
+      expect(engine.getState().selectedTrackId).toBeNull();
+      engine.dispose();
+    });
+
+    it('selects a track', () => {
+      engine.selectTrack('t1');
+      expect(engine.getState().selectedTrackId).toBe('t1');
+      engine.selectTrack(null);
+      expect(engine.getState().selectedTrackId).toBeNull();
+      engine.dispose();
+    });
+
+    it('selectTrack does not emit when track unchanged', () => {
+      engine.selectTrack('t1');
+      const listener = vi.fn();
+      engine.on('statechange', listener);
+      engine.selectTrack('t1'); // same track
+      expect(listener).not.toHaveBeenCalled();
+      engine.dispose();
+    });
+
+    it('copies input tracks to prevent external mutation', () => {
+      const tracks = [makeTrack('t1', [])];
+      engine.setTracks(tracks);
+      // Mutate the original array after setTracks
+      tracks.push(makeTrack('t2', []));
+      expect(engine.getState().tracks).toHaveLength(1);
+      engine.dispose();
+    });
+
+    it('removeTrack with non-existent ID does not emit', () => {
+      engine.setTracks([makeTrack('t1', [])]);
+      const listener = vi.fn();
+      engine.on('statechange', listener);
+      listener.mockClear();
+      engine.removeTrack('nonexistent');
+      expect(listener).not.toHaveBeenCalled();
+      engine.dispose();
+    });
+
+    it('removeTrack uses adapter.removeTrack when available', () => {
+      const adapter = createMockAdapter();
+      (adapter as any).removeTrack = vi.fn();
+      const eng = new PlaylistEngine({ adapter });
+      eng.setTracks([makeTrack('t1', []), makeTrack('t2', [])]);
+      (adapter.setTracks as ReturnType<typeof vi.fn>).mockClear();
+
+      eng.removeTrack('t1');
+
+      expect((adapter as any).removeTrack).toHaveBeenCalledWith('t1');
+      expect(adapter.setTracks).not.toHaveBeenCalled();
+      expect(eng.getState().tracks).toHaveLength(1);
+      eng.dispose();
+    });
+
+    it('removeTrack falls back to setTracks when adapter lacks removeTrack', () => {
+      const adapter = createMockAdapter();
+      const eng = new PlaylistEngine({ adapter });
+      eng.setTracks([makeTrack('t1', []), makeTrack('t2', [])]);
+      (adapter.setTracks as ReturnType<typeof vi.fn>).mockClear();
+
+      eng.removeTrack('t1');
+
+      expect(adapter.setTracks).toHaveBeenCalledOnce();
+      expect(eng.getState().tracks).toHaveLength(1);
+      eng.dispose();
+    });
+
+    it('removeTrack with non-existent ID does not call adapter', () => {
+      const adapter = createMockAdapter();
+      (adapter as any).removeTrack = vi.fn();
+      const eng = new PlaylistEngine({ adapter });
+      eng.setTracks([makeTrack('t1', [])]);
+      (adapter.setTracks as ReturnType<typeof vi.fn>).mockClear();
+
+      eng.removeTrack('nonexistent');
+
+      expect((adapter as any).removeTrack).not.toHaveBeenCalled();
+      expect(adapter.setTracks).not.toHaveBeenCalled();
+      expect(eng.getState().tracks).toHaveLength(1);
+      eng.dispose();
+    });
+
+    it('removeTrack clears selectedTrackId when selected track is removed', () => {
+      const adapter = createMockAdapter();
+      (adapter as any).removeTrack = vi.fn();
+      const eng = new PlaylistEngine({ adapter });
+      eng.setTracks([makeTrack('t1', []), makeTrack('t2', [])]);
+      eng.selectTrack('t1');
+      expect(eng.getState().selectedTrackId).toBe('t1');
+
+      eng.removeTrack('t1');
+
+      expect(eng.getState().selectedTrackId).toBeNull();
+      eng.dispose();
+    });
+
+    it('removeTrack does not clear selectedTrackId when a different track is removed', () => {
+      const adapter = createMockAdapter();
+      (adapter as any).removeTrack = vi.fn();
+      const eng = new PlaylistEngine({ adapter });
+      eng.setTracks([makeTrack('t1', []), makeTrack('t2', [])]);
+      eng.selectTrack('t1');
+
+      eng.removeTrack('t2');
+
+      expect(eng.getState().selectedTrackId).toBe('t1');
+      expect(eng.getState().tracks).toHaveLength(1);
+      eng.dispose();
+    });
+  });
+
+  describe('clip editing', () => {
+    let engine: PlaylistEngine;
+    beforeEach(() => {
+      const clip1 = makeClip({
+        id: 'c1',
+        startSample: 0,
+        durationSamples: 44100,
+        name: 'Clip 1',
+      });
+      const clip2 = makeClip({
+        id: 'c2',
+        startSample: 88200,
+        durationSamples: 44100,
+      });
+      engine = new PlaylistEngine();
+      engine.setTracks([makeTrack('t1', [clip1, clip2])]);
+    });
+
+    it('moves a clip with collision constraints', () => {
+      engine.moveClip('t1', 'c1', 22050);
+      const clip = engine.getState().tracks[0].clips[0];
+      expect(clip.startSample).toBe(22050);
+      engine.dispose();
+    });
+
+    it('prevents clip overlap on move', () => {
+      engine.moveClip('t1', 'c1', 100000);
+      const clip = engine.getState().tracks[0].clips[0];
+      // c1 (duration 44100) cannot overlap c2 (starts at 88200)
+      // max position = 88200 - 44100 = 44100
+      expect(clip.startSample).toBe(88200 - 44100);
+      engine.dispose();
+    });
+
+    it('splits a clip', () => {
+      engine.splitClip('t1', 'c1', 22050);
+      const track = engine.getState().tracks[0];
+      expect(track.clips).toHaveLength(3);
+      expect(track.clips[0].name).toBe('Clip 1 (1)');
+      expect(track.clips[1].name).toBe('Clip 1 (2)');
+      engine.dispose();
+    });
+
+    it('trims right boundary', () => {
+      engine.trimClip('t1', 'c1', 'right', -22050);
+      const clip = engine.getState().tracks[0].clips[0];
+      expect(clip.durationSamples).toBe(22050);
+      engine.dispose();
+    });
+
+    it('trims left boundary', () => {
+      engine.trimClip('t1', 'c1', 'left', 11025);
+      const clip = engine.getState().tracks[0].clips[0];
+      expect(clip.startSample).toBe(11025);
+      expect(clip.offsetSamples).toBe(11025);
+      expect(clip.durationSamples).toBe(44100 - 11025);
+      engine.dispose();
+    });
+
+    it('does not emit when move constrained to zero delta', () => {
+      // c1 starts at 0, moving left by -1000 gets clamped to 0
+      const listener = vi.fn();
+      engine.on('statechange', listener);
+      listener.mockClear();
+      engine.moveClip('t1', 'c1', -1000);
+      expect(listener).not.toHaveBeenCalled();
+      engine.dispose();
+    });
+
+    it('does not emit when trim constrained to zero delta', () => {
+      // c1 starts at 0 with offsetSamples 0, trimming left further left is clamped to 0
+      const listener = vi.fn();
+      engine.on('statechange', listener);
+      listener.mockClear();
+      engine.trimClip('t1', 'c1', 'left', -1000);
+      expect(listener).not.toHaveBeenCalled();
+      engine.dispose();
+    });
+
+    it('ignores operations on non-existent track without emitting', () => {
+      const listener = vi.fn();
+      engine.on('statechange', listener);
+      listener.mockClear(); // clear from setTracks in beforeEach
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      engine.moveClip('nonexistent', 'c1', 1000);
+      engine.splitClip('nonexistent', 'c1', 22050);
+      engine.trimClip('nonexistent', 'c1', 'left', 1000);
+      expect(listener).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledTimes(3);
+      warnSpy.mockRestore();
+      engine.dispose();
+    });
+
+    it('ignores operations on non-existent clip without emitting', () => {
+      const listener = vi.fn();
+      engine.on('statechange', listener);
+      listener.mockClear();
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      engine.moveClip('t1', 'nonexistent', 1000);
+      engine.splitClip('t1', 'nonexistent', 22050);
+      engine.trimClip('t1', 'nonexistent', 'left', 1000);
+      expect(listener).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledTimes(3);
+      warnSpy.mockRestore();
+      engine.dispose();
+    });
+  });
+
+  describe('tracksVersion counter', () => {
+    it('starts at 0', () => {
+      const engine = new PlaylistEngine();
+      expect(engine.getState().tracksVersion).toBe(0);
+      engine.dispose();
+    });
+
+    it('increments on setTracks, addTrack, removeTrack', () => {
+      const engine = new PlaylistEngine();
+      engine.setTracks([makeTrack('t1', [])]);
+      expect(engine.getState().tracksVersion).toBe(1);
+
+      engine.addTrack(makeTrack('t2', []));
+      expect(engine.getState().tracksVersion).toBe(2);
+
+      engine.removeTrack('t1');
+      expect(engine.getState().tracksVersion).toBe(3);
+      engine.dispose();
+    });
+
+    it('increments on moveClip, trimClip, splitClip', () => {
+      const engine = new PlaylistEngine();
+      const clip = makeClip({ id: 'c1', startSample: 44100, durationSamples: 44100, name: 'C1' });
+      engine.setTracks([makeTrack('t1', [clip])]);
+      const versionAfterSet = engine.getState().tracksVersion;
+
+      engine.moveClip('t1', 'c1', 1000);
+      expect(engine.getState().tracksVersion).toBe(versionAfterSet + 1);
+
+      engine.trimClip('t1', 'c1', 'right', -5000);
+      expect(engine.getState().tracksVersion).toBe(versionAfterSet + 2);
+
+      engine.splitClip('t1', 'c1', engine.getState().tracks[0].clips[0].startSample + 10000);
+      expect(engine.getState().tracksVersion).toBe(versionAfterSet + 3);
+      engine.dispose();
+    });
+
+    it('does not increment on selection, zoom, volume, or loop changes', () => {
+      const engine = new PlaylistEngine({ zoomLevels: [256, 512, 1024] });
+      engine.setTracks([makeTrack('t1', [])]);
+      const version = engine.getState().tracksVersion;
+
+      engine.setSelection(1, 2);
+      engine.setLoopRegion(1, 3);
+      engine.setLoopEnabled(true);
+      engine.setMasterVolume(0.5);
+      engine.zoomIn();
+      engine.selectTrack('t1');
+
+      expect(engine.getState().tracksVersion).toBe(version);
+      engine.dispose();
+    });
+
+    it('does not increment on no-op mutations', () => {
+      const engine = new PlaylistEngine();
+      const clip = makeClip({ id: 'c1', startSample: 0, durationSamples: 44100 });
+      engine.setTracks([makeTrack('t1', [clip])]);
+      const version = engine.getState().tracksVersion;
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      // Move constrained to 0 (already at left edge)
+      engine.moveClip('t1', 'c1', -1000);
+      // Trim constrained to 0 (already at left edge)
+      engine.trimClip('t1', 'c1', 'left', -1000);
+      // Non-existent track/clip (produces console.warn)
+      engine.moveClip('nope', 'c1', 1000);
+      engine.splitClip('t1', 'nope', 22050);
+
+      warnSpy.mockRestore();
+      expect(engine.getState().tracksVersion).toBe(version);
+      engine.dispose();
+    });
+  });
+
+  describe('clip editing adapter sync', () => {
+    it('moveClip syncs adapter with updated tracks', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      const clip1 = makeClip({ id: 'c1', startSample: 0, durationSamples: 44100 });
+      const clip2 = makeClip({ id: 'c2', startSample: 88200, durationSamples: 44100 });
+      engine.setTracks([makeTrack('t1', [clip1, clip2])]);
+      (adapter.setTracks as ReturnType<typeof vi.fn>).mockClear();
+
+      engine.moveClip('t1', 'c1', 22050);
+      expect(adapter.setTracks).toHaveBeenCalledTimes(1);
+      const tracks = (adapter.setTracks as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(tracks[0].clips[0].startSample).toBe(22050);
+      engine.dispose();
+    });
+
+    it('trimClip syncs adapter with updated tracks', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      const clip = makeClip({ id: 'c1', startSample: 0, durationSamples: 44100 });
+      engine.setTracks([makeTrack('t1', [clip])]);
+      (adapter.setTracks as ReturnType<typeof vi.fn>).mockClear();
+
+      engine.trimClip('t1', 'c1', 'right', -22050);
+      expect(adapter.setTracks).toHaveBeenCalledTimes(1);
+      const tracks = (adapter.setTracks as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(tracks[0].clips[0].durationSamples).toBe(22050);
+      engine.dispose();
+    });
+
+    it('splitClip syncs adapter with updated tracks', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      const clip = makeClip({ id: 'c1', startSample: 0, durationSamples: 44100, name: 'Clip 1' });
+      engine.setTracks([makeTrack('t1', [clip])]);
+      (adapter.setTracks as ReturnType<typeof vi.fn>).mockClear();
+
+      engine.splitClip('t1', 'c1', 22050);
+      expect(adapter.setTracks).toHaveBeenCalledTimes(1);
+      const tracks = (adapter.setTracks as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(tracks[0].clips).toHaveLength(2);
+      // Verify left clip: starts at 0, duration up to split point
+      expect(tracks[0].clips[0].startSample).toBe(0);
+      expect(tracks[0].clips[0].durationSamples).toBe(22050);
+      expect(tracks[0].clips[0].offsetSamples).toBe(0);
+      expect(tracks[0].clips[0].name).toBe('Clip 1 (1)');
+      // Verify right clip: starts at split point, remaining duration
+      expect(tracks[0].clips[1].startSample).toBe(22050);
+      expect(tracks[0].clips[1].durationSamples).toBe(22050);
+      expect(tracks[0].clips[1].offsetSamples).toBe(22050);
+      expect(tracks[0].clips[1].name).toBe('Clip 1 (2)');
+      engine.dispose();
+    });
+
+    it('no-op operations do not call adapter.setTracks', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      const clip = makeClip({ id: 'c1', startSample: 0, durationSamples: 44100 });
+      engine.setTracks([makeTrack('t1', [clip])]);
+      (adapter.setTracks as ReturnType<typeof vi.fn>).mockClear();
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      // Zero-delta move (already at left edge, constrained to 0)
+      engine.moveClip('t1', 'c1', -1000);
+      expect(adapter.setTracks).not.toHaveBeenCalled();
+
+      // Zero-delta trim (already at left edge)
+      engine.trimClip('t1', 'c1', 'left', -1000);
+      expect(adapter.setTracks).not.toHaveBeenCalled();
+
+      // Non-existent track
+      engine.moveClip('nope', 'c1', 1000);
+      expect(adapter.setTracks).not.toHaveBeenCalled();
+
+      // Non-existent clip for split
+      engine.splitClip('t1', 'nope', 22050);
+      expect(adapter.setTracks).not.toHaveBeenCalled();
+
+      warnSpy.mockRestore();
+      engine.dispose();
+    });
+  });
+
+  describe('zoom', () => {
+    it('zooms in and out', () => {
+      const levels = [256, 512, 1024, 2048];
+      const engine = new PlaylistEngine({
+        samplesPerPixel: 1024,
+        zoomLevels: levels,
+      });
+      engine.zoomIn();
+      expect(engine.getState().samplesPerPixel).toBe(512);
+      expect(engine.getState().canZoomIn).toBe(true);
+      engine.zoomIn();
+      expect(engine.getState().samplesPerPixel).toBe(256);
+      expect(engine.getState().canZoomIn).toBe(false);
+      engine.zoomOut();
+      expect(engine.getState().samplesPerPixel).toBe(512);
+      engine.dispose();
+    });
+
+    it('does nothing when zooming past limits', () => {
+      const engine = new PlaylistEngine({
+        samplesPerPixel: 256,
+        zoomLevels: [256, 512],
+      });
+      const listener = vi.fn();
+      engine.on('statechange', listener);
+      engine.zoomIn(); // Already at min
+      expect(listener).not.toHaveBeenCalled();
+      engine.dispose();
+    });
+
+    it('setZoomLevel changes to closest level', () => {
+      const engine = new PlaylistEngine({
+        samplesPerPixel: 256,
+        zoomLevels: [256, 512, 1024, 2048],
+      });
+      engine.setZoomLevel(900); // Closest to 1024
+      expect(engine.getState().samplesPerPixel).toBe(1024);
+      engine.dispose();
+    });
+
+    it('setZoomLevel does not emit when level unchanged', () => {
+      const engine = new PlaylistEngine({
+        samplesPerPixel: 1024,
+        zoomLevels: [256, 512, 1024, 2048],
+      });
+      const listener = vi.fn();
+      engine.on('statechange', listener);
+      engine.setZoomLevel(1024); // Same level
+      expect(listener).not.toHaveBeenCalled();
+      engine.dispose();
+    });
+  });
+
+  describe('playback delegation', () => {
+    it('delegates init to adapter', async () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      await engine.init();
+      expect(adapter.init).toHaveBeenCalled();
+      engine.dispose();
+    });
+
+    it('delegates play/pause/stop to adapter', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      engine.setTracks([
+        makeTrack('t1', [makeClip({ id: 'c1', startSample: 0, durationSamples: 441000 })]),
+      ]);
+      engine.play(1.5);
+      expect(adapter.play).toHaveBeenCalledWith(1.5, undefined);
+      engine.pause();
+      expect(adapter.pause).toHaveBeenCalled();
+      engine.stop();
+      expect(adapter.stop).toHaveBeenCalled();
+      engine.dispose();
+    });
+
+    it('delegates track audio controls to adapter', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      engine.setTrackVolume('t1', 0.5);
+      expect(adapter.setTrackVolume).toHaveBeenCalledWith('t1', 0.5);
+      engine.setTrackMute('t1', true);
+      expect(adapter.setTrackMute).toHaveBeenCalledWith('t1', true);
+      engine.setTrackSolo('t1', true);
+      expect(adapter.setTrackSolo).toHaveBeenCalledWith('t1', true);
+      engine.setTrackPan('t1', -0.5);
+      expect(adapter.setTrackPan).toHaveBeenCalledWith('t1', -0.5);
+      engine.dispose();
+    });
+
+    it('persists track audio state into _tracks for adapter rebuilds', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      engine.setTracks([
+        makeTrack('t1', [makeClip({ id: 'c1', startSample: 44100, durationSamples: 88200 })]),
+      ]);
+
+      // Set audio state via engine methods
+      engine.setTrackVolume('t1', 0.5);
+      engine.setTrackMute('t1', true);
+      engine.setTrackSolo('t1', true);
+      engine.setTrackPan('t1', -0.7);
+
+      // moveClip triggers adapter.setTracks(this._tracks) — verify
+      // the tracks carry the updated audio state
+      engine.moveClip('t1', 'c1', 1000);
+
+      const setTracksCalls = (adapter.setTracks as ReturnType<typeof vi.fn>).mock.calls;
+      // Last call is from moveClip (first was from setTracks above)
+      const tracksPassedToAdapter = setTracksCalls[setTracksCalls.length - 1][0] as ClipTrack[];
+      const track = tracksPassedToAdapter.find((t) => t.id === 't1');
+
+      expect(track).toBeDefined();
+      expect(track!.volume).toBe(0.5);
+      expect(track!.muted).toBe(true);
+      expect(track!.soloed).toBe(true);
+      expect(track!.pan).toBe(-0.7);
+
+      engine.dispose();
+    });
+
+    it('delegates setMasterVolume to adapter', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      engine.setMasterVolume(0.75);
+      expect(adapter.setMasterVolume).toHaveBeenCalledWith(0.75);
+      engine.dispose();
+    });
+
+    it('works without adapter (state-only mode)', () => {
+      const engine = new PlaylistEngine();
+      engine.play();
+      engine.pause();
+      engine.stop();
+      engine.dispose();
+    });
+
+    it('pause captures currentTime from adapter', () => {
+      const adapter = createMockAdapter();
+      (adapter.getCurrentTime as ReturnType<typeof vi.fn>).mockReturnValue(3.5);
+      const engine = new PlaylistEngine({ adapter });
+      engine.setTracks([
+        makeTrack('t1', [makeClip({ id: 'c1', startSample: 0, durationSamples: 441000 })]),
+      ]);
+      engine.play();
+      engine.pause();
+      expect(engine.getState().currentTime).toBe(3.5);
+      engine.dispose();
+    });
+
+    it('updates currentTime on seek', () => {
+      const engine = new PlaylistEngine();
+      engine.setTracks([
+        makeTrack('t1', [makeClip({ id: 'c1', startSample: 0, durationSamples: 441000 })]),
+      ]);
+      engine.seek(5);
+      expect(engine.getState().currentTime).toBe(5);
+      engine.dispose();
+    });
+
+    it('seek beyond duration is allowed (recording/empty timeline)', () => {
+      const engine = new PlaylistEngine();
+      engine.setTracks([
+        makeTrack('t1', [makeClip({ id: 'c1', startSample: 0, durationSamples: 44100 })]),
+      ]);
+      engine.seek(100);
+      expect(engine.getState().currentTime).toBe(100);
+      engine.dispose();
+    });
+
+    it('seek clamps negative to 0', () => {
+      const engine = new PlaylistEngine();
+      engine.seek(-5);
+      expect(engine.getState().currentTime).toBe(0);
+      engine.dispose();
+    });
+
+    it('play beyond duration is allowed (recording/empty timeline)', () => {
+      const engine = new PlaylistEngine();
+      engine.setTracks([
+        makeTrack('t1', [makeClip({ id: 'c1', startSample: 0, durationSamples: 44100 })]),
+      ]);
+      engine.play(100); // Beyond duration — Transport plays silence
+      expect(engine.getState().currentTime).toBe(100);
+      engine.dispose();
+    });
+
+    it('stop() returns currentTime to play start position (Audacity-style)', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      engine.setTracks([
+        makeTrack('t1', [makeClip({ id: 'c1', startSample: 0, durationSamples: 441000 })]),
+      ]);
+      engine.play(3.0);
+      expect(engine.getState().currentTime).toBe(3.0);
+      engine.stop();
+      expect(engine.getState().currentTime).toBe(3.0);
+      engine.dispose();
+    });
+
+    it('stop() returns to 0 when play() was called without startTime', () => {
+      const engine = new PlaylistEngine();
+      engine.play();
+      engine.stop();
+      expect(engine.getState().currentTime).toBe(0);
+      engine.dispose();
+    });
+
+    it('does not set isPlaying when adapter.play throws', () => {
+      const adapter = createMockAdapter();
+      (adapter.play as ReturnType<typeof vi.fn>).mockImplementation(() => {
+        throw new Error('AudioContext not resumed');
+      });
+      const engine = new PlaylistEngine({ adapter });
+      expect(() => engine.play()).toThrow('AudioContext not resumed');
+      expect(engine.getState().isPlaying).toBe(false);
+      engine.dispose();
+    });
+
+    it('restores currentTime and playStartPosition when adapter.play throws', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      engine.setTracks([
+        makeTrack('t1', [makeClip({ id: 'c1', startSample: 0, durationSamples: 441000 })]),
+      ]);
+      engine.seek(2.0);
+      expect(engine.getState().currentTime).toBe(2.0);
+
+      (adapter.play as ReturnType<typeof vi.fn>).mockImplementation(() => {
+        throw new Error('Transport failure');
+      });
+
+      expect(() => engine.play(5.0)).toThrow('Transport failure');
+      // currentTime should be restored to pre-play value, not left at 5.0
+      expect(engine.getState().currentTime).toBe(2.0);
+      // stop() should return to original position, not the failed play position
+      engine.stop();
+      expect(engine.getState().currentTime).toBe(0);
+      engine.dispose();
+    });
+
+    it('play() enables Transport loop when starting inside loop region', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      engine.setTracks([
+        makeTrack('t1', [makeClip({ id: 'c1', startSample: 0, durationSamples: 441000 })]),
+      ]);
+      engine.setLoopRegion(1.0, 3.0);
+      engine.setLoopEnabled(true);
+      (adapter.setLoop as ReturnType<typeof vi.fn>).mockClear();
+
+      engine.play(1.0);
+      expect(adapter.setLoop).toHaveBeenCalledWith(true, 1.0, 3.0);
+      engine.dispose();
+    });
+
+    it('play() enables Transport loop when starting before loopEnd', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      engine.setTracks([
+        makeTrack('t1', [makeClip({ id: 'c1', startSample: 0, durationSamples: 441000 })]),
+      ]);
+      engine.setLoopRegion(1.0, 3.0);
+      engine.setLoopEnabled(true);
+      (adapter.setLoop as ReturnType<typeof vi.fn>).mockClear();
+
+      // Start at 0 — before loop region, but before loopEnd.
+      // Transport plays through to loopEnd, then wraps to loopStart.
+      engine.play(0);
+      expect(adapter.setLoop).toHaveBeenCalledWith(true, 1.0, 3.0);
+      engine.dispose();
+    });
+
+    it('play() at exact loopEnd disables Transport loop', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      engine.setTracks([
+        makeTrack('t1', [makeClip({ id: 'c1', startSample: 0, durationSamples: 441000 })]),
+      ]);
+      engine.setLoopRegion(1.0, 3.0);
+      engine.setLoopEnabled(true);
+      (adapter.setLoop as ReturnType<typeof vi.fn>).mockClear();
+
+      // Start exactly at loopEnd — 3.0 is NOT < 3.0, so loop is disabled
+      engine.play(3.0);
+      expect(adapter.setLoop).toHaveBeenCalledWith(false, 1.0, 3.0);
+      engine.dispose();
+    });
+
+    it('play() past loopEnd disables Transport loop', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      engine.setTracks([
+        makeTrack('t1', [makeClip({ id: 'c1', startSample: 0, durationSamples: 441000 })]),
+      ]);
+      engine.setLoopRegion(1.0, 3.0);
+      engine.setLoopEnabled(true);
+      (adapter.setLoop as ReturnType<typeof vi.fn>).mockClear();
+
+      // Start at 5.0 — past loopEnd, plays to the end without looping
+      engine.play(5.0);
+      expect(adapter.setLoop).toHaveBeenCalledWith(false, 1.0, 3.0);
+      engine.dispose();
+    });
+
+    it('play(start, end) disables Transport loop for selection playback', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      engine.setTracks([
+        makeTrack('t1', [makeClip({ id: 'c1', startSample: 0, durationSamples: 441000 })]),
+      ]);
+      engine.setLoopRegion(1.0, 3.0);
+      engine.setLoopEnabled(true);
+      (adapter.setLoop as ReturnType<typeof vi.fn>).mockClear();
+
+      engine.play(2.0, 4.0);
+      expect(adapter.setLoop).toHaveBeenCalledWith(false, 1.0, 3.0);
+      engine.dispose();
+    });
+
+    it('play() does not call setLoop when loop is disabled', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      engine.setLoopRegion(1.0, 3.0);
+      // Loop is disabled (default)
+      (adapter.setLoop as ReturnType<typeof vi.fn>).mockClear();
+
+      engine.play(0);
+      expect(adapter.setLoop).not.toHaveBeenCalled();
+      engine.dispose();
+    });
+
+    it('pause() does not disable Transport loop', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      engine.setLoopRegion(1.0, 3.0);
+      engine.setLoopEnabled(true);
+      engine.play();
+      (adapter.setLoop as ReturnType<typeof vi.fn>).mockClear();
+
+      engine.pause();
+      expect(adapter.setLoop).not.toHaveBeenCalled();
+      engine.dispose();
+    });
+
+    it('stop() disables Transport loop before stopping', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      engine.setLoopRegion(1.0, 3.0);
+      engine.setLoopEnabled(true);
+      engine.play();
+      (adapter.setLoop as ReturnType<typeof vi.fn>).mockClear();
+
+      engine.stop();
+      expect(adapter.setLoop).toHaveBeenCalledWith(false, 1.0, 3.0);
+      // setLoop is called before stop
+      const setLoopOrder = (adapter.setLoop as ReturnType<typeof vi.fn>).mock
+        .invocationCallOrder[0];
+      const stopOrder = (adapter.stop as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
+      expect(setLoopOrder).toBeLessThan(stopOrder);
+      engine.dispose();
+    });
+
+    it('setLoopEnabled(true) during playback does not activate at exact loopEnd', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      engine.setTracks([
+        makeTrack('t1', [makeClip({ id: 'c1', startSample: 0, durationSamples: 441000 })]),
+      ]);
+      engine.setLoopRegion(1.0, 3.0);
+      engine.play(0);
+      // Position is exactly at loopEnd — strict < means 3.0 is NOT < 3.0
+      (adapter.getCurrentTime as ReturnType<typeof vi.fn>).mockReturnValue(3.0);
+      (adapter.setLoop as ReturnType<typeof vi.fn>).mockClear();
+
+      engine.setLoopEnabled(true);
+      expect(adapter.setLoop).toHaveBeenCalledWith(false, 1.0, 3.0);
+      engine.dispose();
+    });
+
+    it('setLoopEnabled(true) during playback does not activate when past loopEnd', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      engine.setTracks([
+        makeTrack('t1', [makeClip({ id: 'c1', startSample: 0, durationSamples: 441000 })]),
+      ]);
+      engine.setLoopRegion(1.0, 3.0);
+      engine.play(0);
+      // Position is past loopEnd — enabling loop should NOT activate Transport loop
+      (adapter.getCurrentTime as ReturnType<typeof vi.fn>).mockReturnValue(5.0);
+      (adapter.setLoop as ReturnType<typeof vi.fn>).mockClear();
+
+      engine.setLoopEnabled(true);
+      expect(adapter.setLoop).toHaveBeenCalledWith(false, 1.0, 3.0);
+      engine.dispose();
+    });
+
+    it('setLoopEnabled(true) during playback activates when before loopEnd', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      engine.setTracks([
+        makeTrack('t1', [makeClip({ id: 'c1', startSample: 0, durationSamples: 441000 })]),
+      ]);
+      engine.setLoopRegion(1.0, 3.0);
+      engine.play(0);
+      // Position is before loopEnd — enabling loop should activate Transport loop
+      (adapter.getCurrentTime as ReturnType<typeof vi.fn>).mockReturnValue(2.0);
+      (adapter.setLoop as ReturnType<typeof vi.fn>).mockClear();
+
+      engine.setLoopEnabled(true);
+      expect(adapter.setLoop).toHaveBeenCalledWith(true, 1.0, 3.0);
+      engine.dispose();
+    });
+
+    it('setLoopRegion() during playback activates when before new loopEnd', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      engine.setTracks([
+        makeTrack('t1', [makeClip({ id: 'c1', startSample: 0, durationSamples: 441000 })]),
+      ]);
+      engine.setLoopRegion(1.0, 3.0);
+      engine.setLoopEnabled(true);
+      engine.play(0);
+      (adapter.getCurrentTime as ReturnType<typeof vi.fn>).mockReturnValue(2.0);
+      (adapter.setLoop as ReturnType<typeof vi.fn>).mockClear();
+
+      engine.setLoopRegion(1.0, 5.0);
+      expect(adapter.setLoop).toHaveBeenCalledWith(true, 1.0, 5.0);
+      engine.dispose();
+    });
+
+    it('setLoopRegion() during playback does not activate when past new loopEnd', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      engine.setTracks([
+        makeTrack('t1', [makeClip({ id: 'c1', startSample: 0, durationSamples: 441000 })]),
+      ]);
+      engine.setLoopRegion(1.0, 3.0);
+      engine.setLoopEnabled(true);
+      engine.play(0);
+      (adapter.getCurrentTime as ReturnType<typeof vi.fn>).mockReturnValue(6.0);
+      (adapter.setLoop as ReturnType<typeof vi.fn>).mockClear();
+
+      engine.setLoopRegion(1.0, 4.0);
+      expect(adapter.setLoop).toHaveBeenCalledWith(false, 1.0, 4.0);
+      engine.dispose();
+    });
+
+    it('setLoopEnabled(true) when not playing always activates Transport loop', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      engine.setLoopRegion(1.0, 3.0);
+      (adapter.setLoop as ReturnType<typeof vi.fn>).mockClear();
+
+      // Not playing — should always pass enabled=true regardless of _currentTime
+      engine.setLoopEnabled(true);
+      expect(adapter.setLoop).toHaveBeenCalledWith(true, 1.0, 3.0);
+      engine.dispose();
+    });
+  });
+
+  describe('getCurrentTime', () => {
+    it('returns adapter.getCurrentTime when playing', () => {
+      const adapter = createMockAdapter();
+      (adapter.getCurrentTime as ReturnType<typeof vi.fn>).mockReturnValue(2.5);
+      const engine = new PlaylistEngine({ adapter });
+      engine.play();
+
+      expect(engine.getCurrentTime()).toBe(2.5);
+      engine.dispose();
+    });
+
+    it('returns stored currentTime when not playing', () => {
+      const engine = new PlaylistEngine();
+      engine.setTracks([
+        makeTrack('t1', [makeClip({ id: 'c1', startSample: 0, durationSamples: 441000 })]),
+      ]);
+      engine.seek(3.0);
+
+      expect(engine.getCurrentTime()).toBe(3.0);
+      engine.dispose();
+    });
+
+    it('returns stored currentTime without adapter', () => {
+      const engine = new PlaylistEngine();
+      engine.setTracks([
+        makeTrack('t1', [makeClip({ id: 'c1', startSample: 0, durationSamples: 441000 })]),
+      ]);
+      engine.play(1.5);
+
+      // Without adapter, getCurrentTime returns stored _currentTime
+      expect(engine.getCurrentTime()).toBe(1.5);
+      engine.dispose();
+    });
+  });
+
+  describe('events', () => {
+    it('supports on/off for statechange', () => {
+      const engine = new PlaylistEngine();
+      const listener = vi.fn();
+      engine.on('statechange', listener);
+      engine.setTracks([]);
+      expect(listener).toHaveBeenCalledTimes(1);
+      engine.off('statechange', listener);
+      engine.setTracks([]);
+      expect(listener).toHaveBeenCalledTimes(1);
+      engine.dispose();
+    });
+
+    it('emits play/pause/stop events', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      const playListener = vi.fn();
+      const pauseListener = vi.fn();
+      const stopListener = vi.fn();
+      engine.on('play', playListener);
+      engine.on('pause', pauseListener);
+      engine.on('stop', stopListener);
+      engine.play();
+      expect(playListener).toHaveBeenCalled();
+      engine.pause();
+      expect(pauseListener).toHaveBeenCalled();
+      engine.stop();
+      expect(stopListener).toHaveBeenCalled();
+      engine.dispose();
+    });
+
+    it('isolates listener errors from other listeners', () => {
+      const engine = new PlaylistEngine();
+      const errorListener = vi.fn(() => {
+        throw new Error('listener bug');
+      });
+      const goodListener = vi.fn();
+      engine.on('statechange', errorListener);
+      engine.on('statechange', goodListener);
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      engine.setTracks([]); // triggers statechange
+      warnSpy.mockRestore();
+
+      // Both listeners were called; the error didn't block the second
+      expect(errorListener).toHaveBeenCalledTimes(1);
+      expect(goodListener).toHaveBeenCalledTimes(1);
+      engine.dispose();
+    });
+  });
+
+  describe('selection', () => {
+    it('sets selection and emits statechange', () => {
+      const engine = new PlaylistEngine();
+      const listener = vi.fn();
+      engine.on('statechange', listener);
+
+      engine.setSelection(1.5, 3.0);
+      const state = engine.getState();
+      expect(state.selectionStart).toBe(1.5);
+      expect(state.selectionEnd).toBe(3.0);
+      expect(listener).toHaveBeenCalledTimes(1);
+      engine.dispose();
+    });
+
+    it('normalizes start > end so selectionStart <= selectionEnd', () => {
+      const engine = new PlaylistEngine();
+      engine.setSelection(5.0, 2.0);
+      const state = engine.getState();
+      expect(state.selectionStart).toBe(2.0);
+      expect(state.selectionEnd).toBe(5.0);
+      engine.dispose();
+    });
+
+    it('emits when only start changes', () => {
+      const engine = new PlaylistEngine();
+      engine.setSelection(1.0, 3.0);
+      const listener = vi.fn();
+      engine.on('statechange', listener);
+
+      engine.setSelection(1.5, 3.0);
+      expect(listener).toHaveBeenCalledTimes(1);
+      const state = engine.getState();
+      expect(state.selectionStart).toBe(1.5);
+      expect(state.selectionEnd).toBe(3.0);
+      engine.dispose();
+    });
+
+    it('does not emit when selection unchanged', () => {
+      const engine = new PlaylistEngine();
+      engine.setSelection(1.0, 2.0);
+      const listener = vi.fn();
+      engine.on('statechange', listener);
+
+      engine.setSelection(1.0, 2.0);
+      expect(listener).not.toHaveBeenCalled();
+      engine.dispose();
+    });
+  });
+
+  describe('loop region', () => {
+    it('sets loop region and emits statechange', () => {
+      const engine = new PlaylistEngine();
+      const listener = vi.fn();
+      engine.on('statechange', listener);
+
+      engine.setLoopRegion(2.0, 5.0);
+      const state = engine.getState();
+      expect(state.loopStart).toBe(2.0);
+      expect(state.loopEnd).toBe(5.0);
+      expect(listener).toHaveBeenCalledTimes(1);
+      engine.dispose();
+    });
+
+    it('normalizes start > end so loopStart <= loopEnd', () => {
+      const engine = new PlaylistEngine();
+      engine.setLoopRegion(8.0, 3.0);
+      const state = engine.getState();
+      expect(state.loopStart).toBe(3.0);
+      expect(state.loopEnd).toBe(8.0);
+      engine.dispose();
+    });
+
+    it('does not emit when loop region unchanged', () => {
+      const engine = new PlaylistEngine();
+      engine.setLoopRegion(1.0, 3.0);
+      const listener = vi.fn();
+      engine.on('statechange', listener);
+
+      engine.setLoopRegion(1.0, 3.0);
+      expect(listener).not.toHaveBeenCalled();
+      engine.dispose();
+    });
+
+    it('sets loop enabled and emits statechange', () => {
+      const engine = new PlaylistEngine();
+      const listener = vi.fn();
+      engine.on('statechange', listener);
+
+      engine.setLoopEnabled(true);
+      expect(engine.getState().isLoopEnabled).toBe(true);
+      expect(listener).toHaveBeenCalledTimes(1);
+      engine.dispose();
+    });
+
+    it('does not emit when loop enabled unchanged', () => {
+      const engine = new PlaylistEngine();
+      const listener = vi.fn();
+      engine.on('statechange', listener);
+
+      engine.setLoopEnabled(false); // default is false
+      expect(listener).not.toHaveBeenCalled();
+      engine.dispose();
+    });
+
+    it('setLoopRegion delegates to adapter.setLoop', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+
+      engine.setLoopRegion(2.0, 5.0);
+      expect(adapter.setLoop).toHaveBeenCalledWith(false, 2.0, 5.0);
+      engine.dispose();
+    });
+
+    it('setLoopEnabled delegates to adapter.setLoop', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+
+      engine.setLoopRegion(1.0, 3.0);
+      (adapter.setLoop as ReturnType<typeof vi.fn>).mockClear();
+
+      engine.setLoopEnabled(true);
+      expect(adapter.setLoop).toHaveBeenCalledWith(true, 1.0, 3.0);
+      engine.dispose();
+    });
+
+    it('setLoopRegion includes current isLoopEnabled state', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+
+      engine.setLoopEnabled(true);
+      (adapter.setLoop as ReturnType<typeof vi.fn>).mockClear();
+
+      engine.setLoopRegion(4.0, 8.0);
+      expect(adapter.setLoop).toHaveBeenCalledWith(true, 4.0, 8.0);
+      engine.dispose();
+    });
+  });
+
+  describe('master volume', () => {
+    it('stores value, delegates to adapter, and emits statechange', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      const listener = vi.fn();
+      engine.on('statechange', listener);
+
+      engine.setMasterVolume(0.75);
+      expect(engine.getState().masterVolume).toBe(0.75);
+      expect(adapter.setMasterVolume).toHaveBeenCalledWith(0.75);
+      expect(listener).toHaveBeenCalledTimes(1);
+      engine.dispose();
+    });
+
+    it('does not emit when volume unchanged', () => {
+      const engine = new PlaylistEngine();
+      const listener = vi.fn();
+      engine.on('statechange', listener);
+
+      engine.setMasterVolume(1.0); // default is 1.0
+      expect(listener).not.toHaveBeenCalled();
+      engine.dispose();
+    });
+  });
+
+  describe('getState defaults', () => {
+    it('includes all new fields with correct defaults', () => {
+      const engine = new PlaylistEngine();
+      const state = engine.getState();
+      expect(state.selectionStart).toBe(0);
+      expect(state.selectionEnd).toBe(0);
+      expect(state.masterVolume).toBe(1.0);
+      expect(state.loopStart).toBe(0);
+      expect(state.loopEnd).toBe(0);
+      expect(state.isLoopEnabled).toBe(false);
+      engine.dispose();
+    });
+  });
+
+  describe('tempo management', () => {
+    it('has default bpm of 120 and ppqn of 960', () => {
+      const engine = new PlaylistEngine();
+      const state = engine.getState();
+      expect(state.bpm).toBe(120);
+      expect(state.ppqn).toBe(960);
+    });
+
+    it('accepts bpm and ppqn in constructor', () => {
+      const engine = new PlaylistEngine({ bpm: 140, ppqn: 480 });
+      const state = engine.getState();
+      expect(state.bpm).toBe(140);
+      expect(state.ppqn).toBe(480);
+    });
+
+    it('setTempo updates bpm and forwards to adapter', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      engine.setTempo(140);
+      expect(engine.getState().bpm).toBe(140);
+      expect(adapter.setTempo).toHaveBeenCalledWith(140, undefined);
+    });
+
+    it('setTempo with atTick forwards to adapter', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      engine.setTempo(140, 960);
+      expect(adapter.setTempo).toHaveBeenCalledWith(140, 960);
+    });
+
+    it('setTempo emits statechange', () => {
+      const engine = new PlaylistEngine();
+      const listener = vi.fn();
+      engine.on('statechange', listener);
+      engine.setTempo(140);
+      expect(listener).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('startTick enrichment', () => {
+    it('setTracks enriches clips without startTick', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter, bpm: 120, ppqn: 960 });
+      engine.setTracks([
+        makeTrack('t1', [makeClip({ id: 'c1', startSample: 24000, durationSamples: 48000 })]),
+      ]);
+      const clip = engine.getState().tracks[0].clips[0];
+      // Engine _sampleRate is 48000; 24000 / 48000 = 0.5 seconds
+      // 0.5 * 960 * 120 / 60 = 960 ticks
+      expect(clip.startTick).toBe(960);
+    });
+
+    it('setTracks preserves existing startTick', () => {
+      const engine = new PlaylistEngine({ bpm: 120, ppqn: 960 });
+      engine.setTracks([
+        makeTrack('t1', [
+          makeClip({ id: 'c1', startSample: 24000, durationSamples: 48000, startTick: 500 }),
+        ]),
+      ]);
+      expect(engine.getState().tracks[0].clips[0].startTick).toBe(500);
+    });
+
+    it('setTempo recomputes startSample from startTick', () => {
+      const engine = new PlaylistEngine({ bpm: 120, ppqn: 960 });
+      engine.setTracks([
+        makeTrack('t1', [
+          makeClip({ id: 'c1', startSample: 24000, durationSamples: 48000, startTick: 960 }),
+        ]),
+      ]);
+      // At 120 BPM: 960 ticks → 0.5s → 0.5 * 48000 = 24000 samples
+      expect(engine.getState().tracks[0].clips[0].startSample).toBe(24000);
+
+      engine.setTempo(60);
+      // At 60 BPM: 960 ticks → 1.0s → 1.0 * 48000 = 48000 samples
+      expect(engine.getState().tracks[0].clips[0].startSample).toBe(48000);
+    });
+  });
+
+  describe('getCurrentTime (adapter always)', () => {
+    it('reads from adapter even when not playing', () => {
+      const adapter = createMockAdapter();
+      (adapter.getCurrentTime as ReturnType<typeof vi.fn>).mockReturnValue(2.5);
+      const engine = new PlaylistEngine({ adapter });
+      expect(engine.getCurrentTime()).toBe(2.5);
+    });
+
+    it('returns cached time when no adapter', () => {
+      const engine = new PlaylistEngine();
+      expect(engine.getCurrentTime()).toBe(0);
+    });
+  });
+
+  describe('dispose', () => {
+    it('disposes adapter and clears listeners', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      const listener = vi.fn();
+      engine.on('statechange', listener);
+      engine.dispose();
+      expect(adapter.dispose).toHaveBeenCalled();
+    });
+
+    it('is idempotent — double dispose does not call adapter.dispose twice', () => {
+      const adapter = createMockAdapter();
+      const engine = new PlaylistEngine({ adapter });
+      engine.dispose();
+      engine.dispose();
+      expect(adapter.dispose).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // startTick propagation through clip mutations
+  // ---------------------------------------------------------------------------
+
+  describe('startTick propagation', () => {
+    function setupWithTick() {
+      const engine = new PlaylistEngine({ bpm: 120, ppqn: 960 });
+      engine.setTracks([
+        makeTrack('t1', [
+          makeClip({
+            id: 'c1',
+            startSample: 24000, // 0.5s at 48kHz
+            durationSamples: 48000, // 1.0s
+            startTick: 960,
+          }),
+        ]),
+      ]);
+      return engine;
+    }
+
+    function setupWithoutTick() {
+      const engine = new PlaylistEngine({ bpm: 120, ppqn: 960 });
+      const clip = makeClip({ id: 'c1', startSample: 24000, durationSamples: 48000 });
+      // Remove startTick that setTracks would add
+      engine.setTracks([makeTrack('t1', [clip])]);
+      return engine;
+    }
+
+    // --- moveClip ---
+
+    it('moveClip recomputes startTick when present', () => {
+      const engine = setupWithTick();
+      engine.moveClip('t1', 'c1', 24000); // move +0.5s = +960 ticks
+      const clip = engine.getState().tracks[0].clips[0];
+      // new startSample = 24000 + 24000 = 48000 → 1.0s → 1920 ticks
+      expect(clip.startSample).toBe(48000);
+      expect(clip.startTick).toBe(1920);
+    });
+
+    it('moveClip leaves startTick undefined when not present', () => {
+      const engine = setupWithoutTick();
+      // startTick was enriched by setTracks, so get the enriched value
+      const before = engine.getState().tracks[0].clips[0].startTick;
+      engine.moveClip('t1', 'c1', 24000);
+      const after = engine.getState().tracks[0].clips[0].startTick;
+      // startTick should be recomputed (was enriched by setTracks)
+      expect(after).toBeDefined();
+      expect(after).not.toBe(before);
+    });
+
+    // --- splitClip ---
+
+    it('splitClip enriches both halves with startTick', () => {
+      const engine = setupWithTick();
+      // Split at sample 36000 (0.75s, midpoint of clip)
+      engine.splitClip('t1', 'c1', 36000);
+      const clips = engine.getState().tracks[0].clips;
+      expect(clips).toHaveLength(2);
+      // Left half: startSample = 24000 → startTick = 960
+      expect(clips[0].startTick).toBe(960);
+      // Right half: startSample = 36000 → 0.75s → 1440 ticks
+      expect(clips[1].startSample).toBe(36000);
+      expect(clips[1].startTick).toBe(1440);
+    });
+
+    it('splitClip does not add startTick when original lacks it', () => {
+      const engine = setupWithoutTick();
+      // The clip was enriched by setTracks, so it has startTick.
+      // This test verifies the split propagates it.
+      engine.splitClip('t1', 'c1', 36000);
+      const clips = engine.getState().tracks[0].clips;
+      expect(clips).toHaveLength(2);
+      expect(clips[0].startTick).toBeDefined();
+      expect(clips[1].startTick).toBeDefined();
+    });
+
+    // --- trimClip ---
+
+    it('left trim recomputes startTick', () => {
+      const engine = setupWithTick();
+      engine.trimClip('t1', 'c1', 'left', 12000); // trim 0.25s from left
+      const clip = engine.getState().tracks[0].clips[0];
+      // new startSample = 24000 + 12000 = 36000 → 0.75s → 1440 ticks
+      expect(clip.startSample).toBe(36000);
+      expect(clip.startTick).toBe(1440);
+    });
+
+    it('right trim does not change startTick', () => {
+      const engine = setupWithTick();
+      engine.trimClip('t1', 'c1', 'right', -12000); // shorten by 0.25s
+      const clip = engine.getState().tracks[0].clips[0];
+      expect(clip.startSample).toBe(24000); // unchanged
+      expect(clip.startTick).toBe(960); // unchanged
+    });
+
+    // --- setTempo ---
+
+    it('setTempo does not modify clips without startTick', () => {
+      const engine = new PlaylistEngine({ bpm: 120, ppqn: 960 });
+      // Bypass setTracks enrichment by directly setting _tracks
+      // (simulating a legacy clip that somehow has no startTick)
+      engine.setTracks([
+        makeTrack('t1', [makeClip({ id: 'c1', startSample: 24000, durationSamples: 48000 })]),
+      ]);
+      // setTracks always enriches with startTick, so this test just verifies
+      // that setTempo doesn't crash and the bpm updates correctly.
+      engine.setTempo(60);
+      expect(engine.getState().bpm).toBe(60);
+    });
+
+    // --- addTrack enrichment ---
+
+    it('addTrack enriches clips with startTick', () => {
+      const engine = new PlaylistEngine({ bpm: 120, ppqn: 960 });
+      engine.setTracks([]);
+      engine.addTrack(
+        makeTrack('t1', [makeClip({ id: 'c1', startSample: 24000, durationSamples: 48000 })])
+      );
+      const clip = engine.getState().tracks[0].clips[0];
+      // 24000 / 48000 = 0.5s → 960 ticks at 120 BPM
+      expect(clip.startTick).toBe(960);
+    });
+
+    // --- setTempo validation ---
+
+    it('setTempo rejects zero bpm', () => {
+      const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const engine = new PlaylistEngine({ bpm: 120, ppqn: 960 });
+      engine.setTempo(0);
+      expect(engine.getState().bpm).toBe(120); // unchanged
+      expect(spy).toHaveBeenCalled();
+      spy.mockRestore();
+    });
+
+    it('setTempo rejects negative bpm', () => {
+      const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const engine = new PlaylistEngine({ bpm: 120, ppqn: 960 });
+      engine.setTempo(-90);
+      expect(engine.getState().bpm).toBe(120); // unchanged
+      spy.mockRestore();
+    });
+
+    it('setTempo rejects NaN bpm', () => {
+      const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const engine = new PlaylistEngine({ bpm: 120, ppqn: 960 });
+      engine.setTempo(NaN);
+      expect(engine.getState().bpm).toBe(120); // unchanged
+      spy.mockRestore();
+    });
+  });
+});

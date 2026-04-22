@@ -1,0 +1,1705 @@
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+  type ReactNode,
+} from 'react';
+import { ThemeProvider } from 'styled-components';
+import {
+  configureGlobalContext,
+  createToneAdapter,
+  getGlobalAudioContext,
+  type EffectsFunction,
+  type TrackEffectsFunction,
+  type SoundFontCache,
+} from '@waveform-playlist/playout';
+import { PlaylistEngine, type EngineState } from '@waveform-playlist/engine';
+import {
+  type ClipTrack,
+  type Fade,
+  type AnnotationAction,
+  type MidiNoteData,
+} from '@waveform-playlist/core';
+import {
+  type TimeFormat,
+  type WaveformPlaylistTheme,
+  defaultTheme,
+} from '@waveform-playlist/ui-components';
+import { getContext } from 'tone';
+import { extractPeaksFromWaveformDataFull } from './waveformDataLoader';
+import type WaveformData from 'waveform-data';
+import type { PeakData } from '@waveform-playlist/core';
+import type { AnnotationData } from '@waveform-playlist/core';
+import {
+  useTimeFormat,
+  useZoomControls,
+  useMasterVolume,
+  useSelectionState,
+  useLoopState,
+  useSelectedTrack,
+  useUndoState,
+  useAnimationFrameLoop,
+  useWaveformDataCache,
+} from './hooks';
+
+// Types
+export interface ClipPeaks {
+  clipId: string;
+  trackName: string;
+  peaks: PeakData;
+  startSample: number;
+  durationSamples: number;
+  fadeIn?: Fade;
+  fadeOut?: Fade;
+  midiNotes?: MidiNoteData[];
+  sampleRate?: number;
+  offsetSamples?: number;
+}
+
+export type TrackClipPeaks = ClipPeaks[];
+
+// Legacy WaveformTrack type - kept for reference but deprecated
+// @deprecated Use ClipTrack from @waveform-playlist/core instead
+export interface WaveformTrack {
+  src: string | AudioBuffer;
+  name?: string;
+  effects?: TrackEffectsFunction;
+}
+
+export interface TrackState {
+  name: string;
+  muted: boolean;
+  soloed: boolean;
+  volume: number;
+  pan: number;
+}
+
+// Split contexts for performance optimization
+// Animation context contains playback state and timing refs — no per-frame state updates
+
+/** Per-frame data passed to registered animation callbacks. */
+export interface FrameData {
+  /** Raw engine time (for state/logic — NOT for visual positioning). */
+  readonly time: number;
+  /** time - outputLatency (for DOM positioning — matches speaker output). */
+  readonly visualTime: number;
+  readonly sampleRate: number;
+  readonly samplesPerPixel: number;
+}
+
+export interface PlaybackAnimationContextValue {
+  isPlaying: boolean;
+  currentTime: number;
+  currentTimeRef: React.RefObject<number>;
+  // Refs for direct time calculation in animated components (avoids timing drift)
+  playbackStartTimeRef: React.RefObject<number>; // context.currentTime when playback started
+  audioStartPositionRef: React.RefObject<number>; // Audio position when playback started
+  /** Returns current playback time from engine (auto-wraps at loop boundaries). */
+  getPlaybackTime: () => number;
+  /** Register a per-frame callback driven by the single animation loop. */
+  registerFrameCallback: (id: string, cb: (data: FrameData) => void) => void;
+  /** Unregister a per-frame callback. */
+  unregisterFrameCallback: (id: string) => void;
+}
+
+export interface PlaylistStateContextValue {
+  continuousPlay: boolean;
+  linkEndpoints: boolean;
+  annotationsEditable: boolean;
+  isAutomaticScroll: boolean;
+  isLoopEnabled: boolean;
+  annotations: AnnotationData[];
+  activeAnnotationId: string | null;
+  selectionStart: number;
+  selectionEnd: number;
+  selectedTrackId: string | null; // ID of currently selected track for editing operations
+  // Loop region (separate from selection) - Audacity-style loop points
+  loopStart: number;
+  loopEnd: number;
+  /** Whether playback continues past the end of loaded audio */
+  indefinitePlayback: boolean;
+  /** Whether undo is available */
+  canUndo: boolean;
+  /** Whether redo is available */
+  canRedo: boolean;
+}
+
+export interface PlaylistControlsContextValue {
+  // Playback controls
+  play: (startTime?: number, playDuration?: number) => Promise<void>;
+  pause: () => void;
+  stop: () => void;
+  seekTo: (time: number) => void;
+  setCurrentTime: (time: number) => void;
+
+  // Track controls
+  setTrackMute: (trackIndex: number, muted: boolean) => void;
+  setTrackSolo: (trackIndex: number, soloed: boolean) => void;
+  setTrackVolume: (trackIndex: number, volume: number) => void;
+  setTrackPan: (trackIndex: number, pan: number) => void;
+
+  // Selection
+  setSelection: (start: number, end: number) => void;
+  setSelectedTrackId: (trackId: string | null) => void;
+
+  // Time format
+  setTimeFormat: (format: TimeFormat) => void;
+  formatTime: (seconds: number) => string;
+
+  // Zoom
+  zoomIn: () => void;
+  zoomOut: () => void;
+
+  // Master volume
+  setMasterVolume: (volume: number) => void;
+
+  // Automatic scroll
+  setAutomaticScroll: (enabled: boolean) => void;
+  setScrollContainer: (element: HTMLDivElement | null) => void;
+  scrollContainerRef: React.RefObject<HTMLDivElement | null>;
+
+  // Annotation controls
+  setContinuousPlay: (enabled: boolean) => void;
+  setLinkEndpoints: (enabled: boolean) => void;
+  setAnnotationsEditable: (enabled: boolean) => void;
+  setAnnotations: React.Dispatch<React.SetStateAction<AnnotationData[]>>;
+  setActiveAnnotationId: (id: string | null) => void;
+
+  // Loop controls
+  setLoopEnabled: (enabled: boolean) => void;
+  setLoopRegion: (start: number, end: number) => void;
+  setLoopRegionFromSelection: () => void;
+  clearLoopRegion: () => void;
+
+  // Undo/redo
+  undo: () => void;
+  redo: () => void;
+}
+
+export interface PlaylistDataContextValue {
+  duration: number;
+  audioBuffers: AudioBuffer[];
+  peaksDataArray: TrackClipPeaks[]; // Array of tracks, each containing array of clip peaks
+  trackStates: TrackState[];
+  tracks: ClipTrack[]; // Original tracks array with IDs
+  sampleRate: number;
+  waveHeight: number;
+  timeScaleHeight: number;
+  minimumPlaylistHeight: number;
+  controls: { show: boolean; width: number };
+  playoutRef: React.RefObject<PlaylistEngine | null>;
+  samplesPerPixel: number;
+  timeFormat: TimeFormat;
+  masterVolume: number;
+  canZoomIn: boolean;
+  canZoomOut: boolean;
+  barWidth: number;
+  barGap: number;
+  /** Width in pixels of progress bars. Defaults to barWidth + barGap (fills gaps). */
+  progressBarWidth: number;
+  /** Whether the playlist has finished loading all tracks */
+  isReady: boolean;
+  /** Whether tracks are rendered in mono mode */
+  mono: boolean;
+  /** Ref set by useClipDragHandlers during boundary trim drags.
+   *  When true, loadAudio skips engine rebuild — visual updates flow via React state only. */
+  isDraggingRef: React.MutableRefObject<boolean>;
+  onTracksChange: ((tracks: ClipTrack[]) => void) | undefined;
+}
+
+// Create the 4 separate contexts
+const PlaybackAnimationContext = createContext<PlaybackAnimationContextValue | null>(null);
+const PlaylistStateContext = createContext<PlaylistStateContextValue | null>(null);
+const PlaylistControlsContext = createContext<PlaylistControlsContextValue | null>(null);
+const PlaylistDataContext = createContext<PlaylistDataContextValue | null>(null);
+
+export interface WaveformPlaylistProviderProps {
+  tracks: ClipTrack[]; // Updated to use clip-based model
+  timescale?: boolean;
+  mono?: boolean;
+  waveHeight?: number;
+  samplesPerPixel?: number;
+  zoomLevels?: number[]; // Array of zoom levels in samples per pixel (lower = more zoomed in)
+  automaticScroll?: boolean;
+  theme?: Partial<WaveformPlaylistTheme>;
+  controls?: {
+    show: boolean;
+    width: number;
+  };
+  annotationList?: {
+    annotations?: AnnotationData[];
+    editable?: boolean;
+    isContinuousPlay?: boolean;
+    linkEndpoints?: boolean;
+    controls?: AnnotationAction[];
+  };
+  effects?: EffectsFunction;
+  onReady?: () => void;
+  /** @deprecated Use onAnnotationsChange instead */
+  onAnnotationUpdate?: (annotations: AnnotationData[]) => void;
+  /** Callback when annotations are changed (drag, edit, etc.) */
+  onAnnotationsChange?: (annotations: AnnotationData[]) => void;
+  /** Width in pixels of waveform bars. Default: 1 */
+  barWidth?: number;
+  /** Spacing in pixels between waveform bars. Default: 0 */
+  barGap?: number;
+  /** Width in pixels of progress bars. Default: barWidth + barGap (fills gaps). */
+  progressBarWidth?: number;
+  /** Callback when engine clip operations (move, trim, split) change tracks.
+   * The provider calls this so the parent can update its tracks state without
+   * triggering a full engine rebuild.
+   *
+   * **Important:** The parent must pass the received `tracks` reference back as
+   * the `tracks` prop (i.e. `setState(tracks)`). The provider uses reference
+   * identity (`tracks === engineTracksRef.current`) to detect engine-originated
+   * updates and skip the expensive `loadAudio` rebuild. */
+  onTracksChange?: (tracks: ClipTrack[]) => void;
+  /** SoundFont cache for sample-based MIDI playback. When provided, MIDI clips
+   *  use SoundFont samples instead of PolySynth synthesis. */
+  soundFontCache?: SoundFontCache;
+  /** When true, tracks render visually but the engine build is deferred.
+   *  Use this during progressive loading to avoid rebuilding the engine for
+   *  each track — flip to false when all tracks are ready for a single build. */
+  deferEngineRebuild?: boolean;
+  /** Disable automatic stop when the cursor reaches the end of the longest
+   *  track. Useful for DAW-style recording beyond existing audio. */
+  indefinitePlayback?: boolean;
+  /** Desired AudioContext sample rate. Creates a cross-browser AudioContext at
+   *  this rate via standardized-audio-context. Pre-computed peaks (.dat files)
+   *  render instantly when they match. On mismatch, falls back to worker. */
+  sampleRate?: number;
+  children: ReactNode;
+}
+
+export const WaveformPlaylistProvider: React.FC<WaveformPlaylistProviderProps> = ({
+  tracks,
+  timescale = false,
+  mono = false,
+  waveHeight = 80,
+  samplesPerPixel: initialSamplesPerPixel = 1024,
+  zoomLevels,
+  automaticScroll = false,
+  theme: userTheme,
+  controls = { show: false, width: 0 },
+  annotationList,
+  effects,
+  onReady,
+  onAnnotationUpdate: _onAnnotationUpdate,
+  onAnnotationsChange,
+  barWidth = 1,
+  barGap = 0,
+  progressBarWidth: progressBarWidthProp,
+  onTracksChange,
+  soundFontCache,
+  deferEngineRebuild = false,
+  indefinitePlayback = false,
+  sampleRate: sampleRateProp,
+  children,
+}) => {
+  // Default progressBarWidth to barWidth + barGap (fills gaps)
+  const progressBarWidth = progressBarWidthProp ?? barWidth + barGap;
+
+  // Ref for animation loop access (avoids adding prop to useCallback deps)
+  const indefinitePlaybackRef = useRef(indefinitePlayback);
+  indefinitePlaybackRef.current = indefinitePlayback;
+
+  // Stabilize zoomLevels reference — inline arrays (e.g. zoomLevels={[256, 512]})
+  // create a new reference every render, which would trigger engine rebuild via
+  // loadAudio deps. Content-based comparison avoids spurious rebuilds.
+  const stableZoomLevels = useMemo(
+    () => zoomLevels,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [zoomLevels?.join(',')]
+  );
+
+  // Annotations are derived from prop (single source of truth in parent)
+  // In v6, annotations must be pre-parsed (numeric start/end). Use parseAeneas() from @waveform-playlist/annotations before passing.
+  const annotations = useMemo(() => {
+    if (!annotationList?.annotations) return [];
+    if (process.env.NODE_ENV !== 'production' && annotationList.annotations.length > 0) {
+      const first = annotationList.annotations[0] as unknown as Record<string, unknown>;
+      if (typeof first.start !== 'number' || typeof first.end !== 'number') {
+        console.error(
+          '[waveform-playlist] Annotations must have numeric start/end values. ' +
+            'In v6, use parseAeneas() from @waveform-playlist/annotations before passing annotations. ' +
+            'Received start type: ' +
+            typeof first.start
+        );
+        return [];
+      }
+    }
+    return annotationList.annotations;
+  }, [annotationList?.annotations]);
+
+  // Ref for animation loop (avoids restarting loop on annotation change)
+  const annotationsRef = useRef<AnnotationData[]>(annotations);
+  annotationsRef.current = annotations;
+
+  // State
+  const [activeAnnotationId, setActiveAnnotationIdState] = useState<string | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [audioBuffers, setAudioBuffers] = useState<AudioBuffer[]>([]);
+  const [peaksDataArray, setPeaksDataArray] = useState<TrackClipPeaks[]>([]); // Updated for clip-based peaks
+  const [trackStates, setTrackStates] = useState<TrackState[]>([]);
+  const [isAutomaticScroll, setIsAutomaticScroll] = useState(automaticScroll);
+  const [continuousPlay, setContinuousPlayState] = useState(
+    annotationList?.isContinuousPlay ?? false
+  );
+  const [linkEndpoints, setLinkEndpoints] = useState(annotationList?.linkEndpoints ?? false);
+  const [annotationsEditable, setAnnotationsEditable] = useState(annotationList?.editable ?? false);
+  const [isReady, setIsReady] = useState(false);
+
+  // Refs
+  // Engine owns selection, loop, selectedTrackId, zoom, and masterVolume state.
+  // React subscribes to engine statechange and mirrors into useState/refs.
+  // Playback timing (currentTime, isPlaying) remains in React for animation loop.
+  const engineRef = useRef<PlaylistEngine | null>(null);
+  const audioInitializedRef = useRef<boolean>(false);
+  const isPlayingRef = useRef<boolean>(false);
+  isPlayingRef.current = isPlaying;
+  const playStartPositionRef = useRef<number>(0);
+  const currentTimeRef = useRef<number>(0);
+  const tracksRef = useRef<ClipTrack[]>(tracks);
+  const soundFontCacheRef = useRef(soundFontCache);
+  soundFontCacheRef.current = soundFontCache;
+  const trackStatesRef = useRef<TrackState[]>(trackStates);
+  const playbackStartTimeRef = useRef<number>(0); // context.currentTime when playback started
+  const audioStartPositionRef = useRef<number>(0); // Audio position when playback started
+  const playbackEndTimeRef = useRef<number | null>(null); // Audio position where playback should stop (for selections)
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const isAutomaticScrollRef = useRef<boolean>(false);
+  // Animation frame callback registry — components register per-frame DOM update
+  // callbacks instead of running their own rAF loops. Single loop drives all.
+  const frameCallbacksRef = useRef<Map<string, (data: FrameData) => void>>(new Map());
+  const continuousPlayRef = useRef<boolean>(annotationList?.isContinuousPlay ?? false);
+  const activeAnnotationIdRef = useRef<string | null>(null);
+  // Engine clip operations guard: tracks reference from the last engine statechange.
+  // When engine methods (moveClip, trimClip, splitClip) mutate tracks, the statechange
+  // handler stores state.tracks here and calls onTracksChange with the same reference.
+  // loadAudio checks tracks === engineTracksRef.current to skip the full rebuild.
+  const engineTracksRef = useRef<ClipTrack[] | null>(null);
+  // Monotonic counter from engine.getState().tracksVersion — used to detect
+  // track mutations (move/trim/split/add/remove) vs other statechange events.
+  const lastTracksVersionRef = useRef(0);
+  // Flag set during render to prevent the previous effect cleanup from disposing the
+  // engine when we're skipping the rebuild. React runs previous cleanup before the
+  // current effect body, so the flag must be set during render (which precedes cleanup).
+  const skipEngineDisposeRef = useRef(false);
+  // Set by useClipDragHandlers during boundary trim drags. When true,
+  // loadAudio skips the full engine rebuild — visual updates flow via React
+  // state only. On drag end, engine.trimClip() commits the final delta.
+  const isDraggingRef = useRef(false);
+  // Snapshot of tracks from the previous loadAudio run, used to detect
+  // additive-only changes (new tracks appended, existing unchanged).
+  const prevTracksRef = useRef<ClipTrack[]>([]);
+  // Provider-level ref for scroll-position math and animation loop pixel
+  // calculation. Distinct from useZoomControls's internal ref (statechange guard).
+  const samplesPerPixelRef = useRef<number>(initialSamplesPerPixel);
+  // AudioContext sample rate — single source of truth. Guarded for SSR where
+  // AudioContext is undefined. Rate never changes after context creation.
+  // If sampleRateHint is provided, configure the context before reading the rate.
+  const [initialSampleRate] = useState<number>(() => {
+    if (typeof AudioContext === 'undefined') return sampleRateProp ?? 48000;
+    try {
+      if (sampleRateProp !== undefined) {
+        return configureGlobalContext({ sampleRate: sampleRateProp });
+      }
+      return getGlobalAudioContext().sampleRate;
+    } catch (err) {
+      console.warn(
+        '[waveform-playlist] Failed to configure AudioContext: ' +
+          String(err) +
+          ' — falling back to ' +
+          (sampleRateProp ?? 48000) +
+          ' Hz'
+      );
+      return sampleRateProp ?? 48000;
+    }
+  });
+  const sampleRateRef = useRef<number>(initialSampleRate);
+
+  // Custom hooks — engine-owned state delegated to hooks with onEngineState() pattern
+  const { timeFormat, setTimeFormat, formatTime } = useTimeFormat();
+  const zoom = useZoomControls({ engineRef, initialSamplesPerPixel });
+  const { samplesPerPixel, onEngineState: onZoomEngineState } = zoom;
+  const volume = useMasterVolume({ engineRef, initialVolume: 1.0 });
+  const {
+    masterVolume,
+    setMasterVolume,
+    masterVolumeRef,
+    onEngineState: onVolumeEngineState,
+  } = volume;
+  const {
+    selectionStart,
+    selectionEnd,
+    setSelection: setSelectionEngine,
+    selectionStartRef,
+    selectionEndRef,
+    onEngineState: onSelectionEngineState,
+  } = useSelectionState({ engineRef });
+  const {
+    isLoopEnabled,
+    loopStart,
+    loopEnd,
+    setLoopEnabled,
+    setLoopRegion,
+    clearLoopRegion,
+    isLoopEnabledRef,
+    loopStartRef,
+    loopEndRef,
+    onEngineState: onLoopEngineState,
+  } = useLoopState({ engineRef });
+  const {
+    selectedTrackId,
+    setSelectedTrackId: setSelectedTrackIdControl,
+    onEngineState: onSelectedTrackEngineState,
+    selectedTrackIdRef,
+  } = useSelectedTrack({ engineRef });
+  const {
+    canUndo,
+    canRedo,
+    undo,
+    redo,
+    onEngineState: onUndoEngineState,
+  } = useUndoState({ engineRef });
+  const { animationFrameRef, startAnimationFrameLoop, stopAnimationFrameLoop } =
+    useAnimationFrameLoop();
+
+  // Worker-based WaveformData cache for fast zoom resampling
+  const baseScale = useMemo(
+    () => Math.min(...(stableZoomLevels ?? [256, 512, 1024, 2048, 4096, 8192])),
+    [stableZoomLevels]
+  );
+  const { cache: waveformDataCache } = useWaveformDataCache(tracks, baseScale);
+
+  // Custom setter for continuousPlay that updates BOTH state and ref synchronously
+  // This ensures the ref is updated immediately, before the animation loop can read it
+  const setContinuousPlay = useCallback((value: boolean) => {
+    continuousPlayRef.current = value; // Update ref synchronously
+    setContinuousPlayState(value); // Update state (triggers re-render)
+  }, []);
+
+  // Custom setter for activeAnnotationId that updates BOTH state and ref synchronously
+  const setActiveAnnotationId = useCallback((value: string | null) => {
+    activeAnnotationIdRef.current = value; // Update ref synchronously
+    setActiveAnnotationIdState(value); // Update state (triggers re-render)
+  }, []);
+
+  // Cross-hook concern: reads selection refs to set loop region
+  const setLoopRegionFromSelection = useCallback(() => {
+    const start = selectionStartRef.current ?? 0;
+    const end = selectionEndRef.current ?? 0;
+    if (start !== end && end > start) {
+      setLoopRegion(start, end);
+    }
+  }, [setLoopRegion, selectionStartRef, selectionEndRef]);
+
+  // Keep refs in sync with state
+  useEffect(() => {
+    isAutomaticScrollRef.current = isAutomaticScroll;
+  }, [isAutomaticScroll]);
+
+  useEffect(() => {
+    trackStatesRef.current = trackStates;
+  }, [trackStates]);
+
+  tracksRef.current = tracks;
+
+  // Render-phase guard: detect when tracks prop came from an engine clip operation.
+  // Must be set before effects run so the previous effect cleanup can skip disposal.
+  // Also skip disposal during active boundary trim drags — onDragMove updates React
+  // tracks per-frame, triggering effect re-runs whose cleanup would dispose the engine.
+  const isEngineTracks = tracks === engineTracksRef.current;
+
+  // Detect additive-only track changes: new tracks appended, existing tracks unchanged.
+  // Uses reference equality on individual tracks — if any existing track object changed
+  // (e.g., clip added to it), this is false and triggers a full rebuild.
+  const prevTracks = prevTracksRef.current;
+  const isIncrementalAdd =
+    engineRef.current !== null &&
+    prevTracks.length > 0 &&
+    tracks.length > prevTracks.length &&
+    prevTracks.every((pt) => {
+      const current = tracks.find((t) => t.id === pt.id);
+      return current === pt; // reference equality — existing tracks must be untouched
+    });
+
+  skipEngineDisposeRef.current = isEngineTracks || isDraggingRef.current || isIncrementalAdd;
+
+  // Adjust scroll position proportionally when zoom changes
+  useEffect(() => {
+    if (!scrollContainerRef.current || duration === 0) return;
+
+    const container = scrollContainerRef.current;
+    const oldSamplesPerPixel = samplesPerPixelRef.current;
+    const newSamplesPerPixel = samplesPerPixel;
+
+    if (oldSamplesPerPixel === newSamplesPerPixel) return;
+
+    // Calculate the current center time in the viewport
+    const containerWidth = container.clientWidth;
+    const currentScrollLeft = container.scrollLeft;
+    const centerPixel = currentScrollLeft + containerWidth / 2;
+    const sr = sampleRateRef.current;
+    const centerTime = (centerPixel * oldSamplesPerPixel) / sr;
+
+    // Calculate new scroll position to keep the same center time
+    const newCenterPixel = (centerTime * sr) / newSamplesPerPixel;
+    const newScrollLeft = Math.max(0, newCenterPixel - containerWidth / 2);
+
+    container.scrollLeft = newScrollLeft;
+    samplesPerPixelRef.current = newSamplesPerPixel;
+  }, [samplesPerPixel, duration]);
+
+  // Track pending playback resume after tracks change
+  const pendingResumeRef = useRef<{ position: number } | null>(null);
+
+  // Load audio from clips (only when tracks change)
+  useEffect(() => {
+    // Guard: skip full rebuild when tracks came from an engine clip operation
+    // (moveClip, trimClip, splitClip). The engine and adapter already have the
+    // correct tracks — we just need to update duration for the timeline.
+    // Also skip during active boundary trim drags — visual updates flow via
+    // React state only; engine.trimClip() commits the final delta on drag end.
+    if (isEngineTracks || isDraggingRef.current) {
+      if (isEngineTracks) {
+        engineTracksRef.current = null;
+      }
+
+      // Recalculate duration from updated clip positions
+      let maxDuration = 0;
+      tracks.forEach((track) => {
+        track.clips.forEach((clip) => {
+          const clipEnd = (clip.startSample + clip.durationSamples) / clip.sampleRate;
+          maxDuration = Math.max(maxDuration, clipEnd);
+        });
+      });
+      setDuration(maxDuration);
+      prevTracksRef.current = tracks;
+      return;
+    }
+
+    // Guard: incremental track addition — only new tracks appended, existing
+    // tracks unchanged. Add each new track to the existing engine without
+    // tearing down the playout. This avoids disposing and recreating all
+    // audio nodes when dropping a file or finishing a recording.
+    if (isIncrementalAdd && engineRef.current) {
+      try {
+        // Use prevTracks captured during render (not prevTracksRef.current) to ensure
+        // the guard condition and inner logic operate on the same snapshot.
+        const prevIds = new Set(prevTracks.map((t) => t.id));
+        const addedTracks = tracks.filter((t) => !prevIds.has(t.id));
+
+        // Merge current UI state into new tracks before adding to engine
+        const currentTrackStates = trackStatesRef.current;
+        for (const track of addedTracks) {
+          const trackIndex = tracks.indexOf(track);
+          const trackState = currentTrackStates[trackIndex];
+          const trackWithState = {
+            ...track,
+            volume: trackState?.volume ?? track.volume,
+            muted: trackState?.muted ?? track.muted,
+            soloed: trackState?.soloed ?? track.soloed,
+            pan: trackState?.pan ?? track.pan,
+          };
+          engineRef.current!.addTrack(trackWithState);
+        }
+
+        // Update duration from all tracks (including newly added)
+        let maxDuration = 0;
+        tracks.forEach((track) => {
+          track.clips.forEach((clip) => {
+            const clipEnd = (clip.startSample + clip.durationSamples) / clip.sampleRate;
+            maxDuration = Math.max(maxDuration, clipEnd);
+          });
+        });
+        setDuration(maxDuration);
+
+        // Initialize track states for the new tracks (preserve existing)
+        setTrackStates((prev) => {
+          if (prev.length === tracks.length) return prev;
+          const newStates = [...prev];
+          for (const track of addedTracks) {
+            newStates.push({
+              name: track.name,
+              muted: track.muted,
+              soloed: track.soloed,
+              volume: track.volume,
+              pan: track.pan,
+            });
+          }
+          return newStates;
+        });
+
+        // Extract audio buffers from all clips across all tracks
+        const buffers: AudioBuffer[] = [];
+        tracks.forEach((track) => {
+          track.clips.forEach((clip) => {
+            if (clip.audioBuffer) {
+              buffers.push(clip.audioBuffer);
+            }
+          });
+        });
+        setAudioBuffers(buffers);
+
+        prevTracksRef.current = tracks;
+        return;
+      } catch (err) {
+        console.warn(
+          '[waveform-playlist] Incremental add failed, falling through to full rebuild:',
+          String(err)
+        );
+        // Fall through to full loadAudio path
+      }
+    }
+
+    // Defer engine rebuild during progressive loading — tracks render visually
+    // (controls, clip shapes, peaks via worker) but the engine isn't built yet.
+    // When deferEngineRebuild flips to false, this effect re-runs and builds once.
+    if (deferEngineRebuild) {
+      // Still update duration so the timeline renders at the correct width
+      let maxDuration = 0;
+      tracks.forEach((track) => {
+        track.clips.forEach((clip) => {
+          const clipEnd = (clip.startSample + clip.durationSamples) / clip.sampleRate;
+          maxDuration = Math.max(maxDuration, clipEnd);
+        });
+      });
+      setDuration(maxDuration);
+      return;
+    }
+
+    // Reset ready state for full rebuild
+    setIsReady(false);
+
+    if (tracks.length === 0) {
+      // Clear state when all tracks are removed
+      setAudioBuffers([]);
+      setDuration(0);
+      setTrackStates([]);
+      setPeaksDataArray([]);
+      if (engineRef.current) {
+        engineRef.current.dispose();
+        engineRef.current = null;
+      }
+      prevTracksRef.current = tracks;
+      return;
+    }
+
+    // Capture playback state before rebuilding playout (read from ref, not state,
+    // so isPlaying can be excluded from the dep array — play/pause must not trigger rebuilds)
+    const wasPlaying = isPlayingRef.current;
+    const resumePosition = currentTimeRef.current;
+
+    // Stop current playback and animation before disposing
+    if (engineRef.current && wasPlaying) {
+      engineRef.current.stop();
+      stopAnimationFrameLoop();
+      // Mark that we need to resume playback after playout is rebuilt
+      pendingResumeRef.current = { position: resumePosition };
+    }
+
+    const loadAudio = async () => {
+      try {
+        // Extract all audio buffers from all clips across all tracks
+        const buffers: AudioBuffer[] = [];
+
+        tracks.forEach((track) => {
+          track.clips.forEach((clip) => {
+            if (clip.audioBuffer) {
+              buffers.push(clip.audioBuffer);
+            }
+          });
+        });
+
+        // Calculate total timeline duration from all clips across all tracks
+        // Use clip.sampleRate which is always defined (works for peaks-only clips too)
+        let maxDuration = 0;
+        tracks.forEach((track) => {
+          track.clips.forEach((clip) => {
+            const sampleRate = clip.sampleRate;
+            const clipEndSample = clip.startSample + clip.durationSamples;
+            const clipEnd = clipEndSample / sampleRate;
+            maxDuration = Math.max(maxDuration, clipEnd);
+          });
+        });
+
+        setAudioBuffers(buffers);
+        setDuration(maxDuration);
+
+        // Initialize or update track states, preserving existing UI state (mute/solo/volume/pan)
+        // Only initialize from ClipTrack props when trackStates is empty or track count changes
+        setTrackStates((prevStates) => {
+          if (prevStates.length === tracks.length) {
+            // Same number of tracks - preserve existing UI state, just update names
+            return prevStates.map((state, i) => ({
+              ...state,
+              name: tracks[i].name,
+            }));
+          }
+          // Track count changed - reinitialize from ClipTrack properties
+          return tracks.map((track) => ({
+            name: track.name,
+            muted: track.muted,
+            soloed: track.soloed,
+            volume: track.volume,
+            pan: track.pan,
+          }));
+        });
+
+        // Dispose old engine before creating new one
+        if (engineRef.current) {
+          engineRef.current.dispose();
+        }
+
+        // Reset tracks version tracking for the new engine
+        lastTracksVersionRef.current = 0;
+        engineTracksRef.current = null;
+
+        // Create engine with Tone.js adapter
+        // Reset init flag — new adapter needs Tone.start() on first play
+        audioInitializedRef.current = false;
+        const adapter = createToneAdapter({ effects, soundFontCache: soundFontCacheRef.current });
+        const engine = new PlaylistEngine({
+          adapter,
+          samplesPerPixel: samplesPerPixelRef.current,
+          zoomLevels: stableZoomLevels,
+        });
+
+        // Seed engine with current UI state so a fresh engine doesn't
+        // reset selection/loop/selectedTrack to defaults on the first statechange emission.
+        engine.setSelection(selectionStartRef.current ?? 0, selectionEndRef.current ?? 0);
+        engine.setLoopRegion(loopStartRef.current ?? 0, loopEndRef.current ?? 0);
+        if (isLoopEnabledRef.current) engine.setLoopEnabled(true);
+        engine.setMasterVolume(masterVolumeRef.current ?? 1.0);
+        if (selectedTrackIdRef.current) engine.selectTrack(selectedTrackIdRef.current);
+
+        // Merge current UI state into tracks before passing to engine
+        const currentTrackStates = trackStatesRef.current;
+        const tracksWithState = tracks.map((track, index) => {
+          const trackState = currentTrackStates[index];
+          return {
+            ...track,
+            volume: trackState?.volume ?? track.volume,
+            muted: trackState?.muted ?? track.muted,
+            soloed: trackState?.soloed ?? track.soloed,
+            pan: trackState?.pan ?? track.pan,
+          };
+        });
+
+        // Subscribe to engine statechange BEFORE setTracks() so the first
+        // emission (which carries correct canZoomIn/canZoomOut) is captured.
+        // Seeding statechanges fired above are harmless — they contain values
+        // that already match the hooks' current state, so onEngineState()
+        // ref guards skip them.
+        // Suppress tracks mirroring during the initial setTracks — the parent
+        // already has these tracks. The flag is local so it becomes false
+        // after setTracks returns (statechange fires synchronously).
+        let suppressTracksMirroring = true;
+        engine.on('statechange', (state: EngineState) => {
+          onSelectionEngineState(state);
+          onLoopEngineState(state);
+          onSelectedTrackEngineState(state);
+          onZoomEngineState(state);
+          onVolumeEngineState(state);
+          onUndoEngineState(state);
+
+          // Mirror engine tracks changes to parent via onTracksChange.
+          // tracksVersion only increments on track mutations (move, trim, split,
+          // setTracks, addTrack, removeTrack), not on selection/zoom/volume changes.
+          if (!suppressTracksMirroring && state.tracksVersion !== lastTracksVersionRef.current) {
+            lastTracksVersionRef.current = state.tracksVersion;
+            engineTracksRef.current = state.tracks;
+            if (onTracksChange) {
+              onTracksChange(state.tracks);
+            } else {
+              console.warn(
+                '[waveform-playlist] Engine tracks changed but onTracksChange prop is not set — ' +
+                  'UI will revert on next render. Pass onTracksChange to WaveformPlaylistProvider.'
+              );
+            }
+          }
+        });
+
+        engine.setTracks(tracksWithState);
+        suppressTracksMirroring = false;
+        lastTracksVersionRef.current = engine.getState().tracksVersion;
+        engineRef.current = engine;
+
+        setIsReady(true);
+
+        // Dispatch custom event for external listeners
+        const event = new CustomEvent('waveform-playlist:ready', {
+          detail: {
+            trackCount: tracks.length,
+            duration: maxDuration,
+          },
+        });
+        window.dispatchEvent(event);
+
+        prevTracksRef.current = tracks;
+
+        onReady?.();
+      } catch (error) {
+        console.warn('[waveform-playlist] Error loading audio:', String(error));
+      }
+    };
+
+    loadAudio();
+
+    return () => {
+      // Skip disposal when the next render's guard will keep the engine alive.
+      // skipEngineDisposeRef is set during the render phase (before this cleanup runs).
+      if (skipEngineDisposeRef.current) {
+        skipEngineDisposeRef.current = false;
+        return;
+      }
+      stopAnimationFrameLoop();
+      if (engineRef.current) {
+        engineRef.current.dispose();
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    tracks,
+    // isEngineTracks is intentionally excluded — it's a render-phase guard read
+    // inside the effect body, not a trigger. Including it causes a spurious re-run
+    // when it flips from true→false after engineTracksRef is cleared.
+    // isPlaying is intentionally excluded — read from isPlayingRef inside the
+    // effect body. Including it causes a full engine+playout rebuild on every
+    // play/pause/stop, destroying and recreating all audio Players.
+    onReady,
+    effects,
+    stopAnimationFrameLoop,
+    onSelectionEngineState,
+    onLoopEngineState,
+    onSelectedTrackEngineState,
+    onZoomEngineState,
+    onVolumeEngineState,
+    onUndoEngineState,
+    onTracksChange,
+    masterVolumeRef,
+    selectionStartRef,
+    selectionEndRef,
+    loopStartRef,
+    loopEndRef,
+    isLoopEnabledRef,
+    stableZoomLevels,
+    soundFontCache,
+    deferEngineRebuild,
+  ]);
+
+  // Regenerate peaks when zoom, mono, or waveformDataCache changes (without reloading audio)
+  // Peak sources in priority order:
+  //   A) clip.waveformData — external pre-computed peaks (e.g. from BBC audiowaveform)
+  //   B) waveformDataCache — worker-generated WaveformData (fast resample on zoom)
+  //   C) empty peaks — clip is still loading or has no audio data
+  useEffect(() => {
+    if (tracks.length === 0) return;
+
+    const allTrackPeaks: TrackClipPeaks[] = tracks.map((track) => {
+      const clipPeaks: ClipPeaks[] = track.clips.map((clip) => {
+        let peaks: PeakData | undefined;
+
+        // Path A: External pre-computed waveform data (e.g. from audiowaveform .dat file)
+        // When sample rates match, use clip offsets directly.
+        // When rates mismatch (e.g., waveformData at 48000 Hz, clip rebuilt at 44100 Hz
+        // after audio decode), convert offsets to the waveformData's sample space and
+        // adjust samplesPerPixel so peaks fill the correct container width.
+        // Path B (worker) replaces these on next render once cache is populated.
+        if (clip.waveformData) {
+          try {
+            const wdRate = clip.waveformData.sample_rate;
+            const clipRate = clip.sampleRate;
+            let peakOffset = clip.offsetSamples;
+            let peakDuration = clip.durationSamples;
+            let peakSpp = samplesPerPixel;
+            if (wdRate !== clipRate && clipRate > 0 && wdRate > 0) {
+              const ratio = wdRate / clipRate;
+              peakOffset = Math.round(clip.offsetSamples * ratio);
+              peakDuration = Math.round(clip.durationSamples * ratio);
+              peakSpp = Math.max(1, Math.round(samplesPerPixel * ratio));
+            }
+            peaks = extractPeaksFromWaveformDataFull(
+              clip.waveformData as WaveformData,
+              peakSpp,
+              mono,
+              peakOffset,
+              peakDuration
+            );
+          } catch (err) {
+            console.warn(
+              '[waveform-playlist] Failed to extract peaks from waveformData: ' + String(err)
+            );
+          }
+        }
+
+        // Path B: Worker-generated WaveformData cache (fast resample on zoom)
+        if (!peaks) {
+          const cached = waveformDataCache.get(clip.id);
+          if (cached) {
+            try {
+              peaks = extractPeaksFromWaveformDataFull(
+                cached,
+                samplesPerPixel,
+                mono,
+                clip.offsetSamples,
+                clip.durationSamples
+              );
+            } catch (err) {
+              console.warn(
+                '[waveform-playlist] Failed to extract peaks from cache: ' + String(err)
+              );
+            }
+          }
+        }
+
+        // Path C: No peaks data available yet — render empty while worker processes.
+        // Use correct channel count from audioBuffer to prevent track height shift
+        // when peaks arrive (mono mode collapses to 1 channel).
+        if (!peaks) {
+          if (!deferEngineRebuild && !clip.audioBuffer && !clip.waveformData && !clip.midiNotes) {
+            console.warn(
+              `[waveform-playlist] Clip "${clip.id}" has no audio data or waveform data`
+            );
+          }
+          const numChannels = mono ? 1 : (clip.audioBuffer?.numberOfChannels ?? 1);
+          // MIDI clips: derive pixel width from sample duration so the clip renders
+          // at the correct width instead of zero-width blank tracks.
+          const pixelLength = clip.midiNotes
+            ? Math.ceil(clip.durationSamples / samplesPerPixel)
+            : 0;
+          peaks = {
+            length: pixelLength,
+            data: Array.from({ length: numChannels }, () => new Int16Array(pixelLength * 2)),
+            bits: 16,
+          };
+        }
+
+        return {
+          clipId: clip.id,
+          trackName: track.name,
+          peaks,
+          startSample: clip.startSample,
+          durationSamples: clip.durationSamples,
+          fadeIn: clip.fadeIn,
+          fadeOut: clip.fadeOut,
+          midiNotes: clip.midiNotes,
+          sampleRate: clip.sampleRate,
+          offsetSamples: clip.offsetSamples,
+        };
+      });
+
+      return clipPeaks;
+    });
+
+    setPeaksDataArray(allTrackPeaks);
+  }, [tracks, samplesPerPixel, mono, waveformDataCache, deferEngineRebuild]);
+
+  // Returns current playback time from engine (auto-wraps at loop boundaries).
+  // Falls back to manual calculation when engine is unavailable.
+  const getPlaybackTimeFallbackWarnedRef = useRef(false);
+  const getPlaybackTime = useCallback(() => {
+    if (engineRef.current) {
+      return engineRef.current.getCurrentTime();
+    }
+    // Fallback: manual calculation (does not handle loop wrapping)
+    if (!getPlaybackTimeFallbackWarnedRef.current) {
+      getPlaybackTimeFallbackWarnedRef.current = true;
+      console.warn(
+        '[waveform-playlist] getPlaybackTime called without engine. ' +
+          'Falling back to manual elapsed time (loop wrapping will not work).'
+      );
+    }
+    const elapsed = getContext().currentTime - (playbackStartTimeRef.current ?? 0);
+    return (audioStartPositionRef.current ?? 0) + elapsed;
+  }, []);
+
+  const registerFrameCallback = useCallback((id: string, cb: (data: FrameData) => void) => {
+    frameCallbacksRef.current.set(id, cb);
+  }, []);
+
+  const unregisterFrameCallback = useCallback((id: string) => {
+    frameCallbacksRef.current.delete(id);
+  }, []);
+
+  // Animation loop
+  const startAnimationLoop = useCallback(() => {
+    // Cache AudioContext at loop start — stable for the lifetime of this playback session.
+    // outputLatency is read per-frame since it's a dynamic property.
+    const audioCtx = getGlobalAudioContext();
+
+    const updateTime = () => {
+      // Get current time from engine (auto-wraps at loop boundaries via Transport.seconds)
+      const time = getPlaybackTime();
+      currentTimeRef.current = time;
+
+      // Compute visual time once — all visual consumers use this same value.
+      // Subtracts outputLatency so DOM positions match speaker output.
+      const latency = 'outputLatency' in audioCtx ? (audioCtx as AudioContext).outputLatency : 0;
+      const visualTime = Math.max(0, time - latency);
+
+      // Drive registered per-frame callbacks BEFORE stop checks so the
+      // final frame renders at the correct stop position (not one frame behind).
+      const sr = sampleRateRef.current;
+      const spp = samplesPerPixelRef.current;
+      const frameData: FrameData = {
+        time,
+        visualTime,
+        sampleRate: sr,
+        samplesPerPixel: spp,
+      };
+      for (const cb of frameCallbacksRef.current.values()) {
+        cb(frameData);
+      }
+
+      // Handle annotation playback based on continuous play mode
+      const currentAnnotations = annotationsRef.current;
+      if (currentAnnotations.length > 0) {
+        const currentAnnotation = currentAnnotations.find(
+          (ann) => time >= ann.start && time < ann.end
+        );
+
+        if (continuousPlayRef.current) {
+          // Continuous play ON: update active annotation, let audio play to the end
+          if (currentAnnotation && currentAnnotation.id !== activeAnnotationIdRef.current) {
+            setActiveAnnotationId(currentAnnotation.id);
+          } else if (!currentAnnotation && activeAnnotationIdRef.current !== null) {
+            // Clear the active annotation when we're past it, but don't stop playback
+            // Let playback continue until the audio actually ends (handled by duration check)
+            setActiveAnnotationId(null);
+          }
+        } else {
+          // Continuous play OFF: stop at end of current annotation
+          if (activeAnnotationIdRef.current) {
+            const activeAnnotation = currentAnnotations.find(
+              (ann) => ann.id === activeAnnotationIdRef.current
+            );
+            if (activeAnnotation && time >= activeAnnotation.end) {
+              // Stop playback at end of current annotation
+              if (engineRef.current) {
+                engineRef.current.stop();
+              }
+              setIsPlaying(false);
+              currentTimeRef.current = playStartPositionRef.current;
+              setCurrentTime(playStartPositionRef.current);
+              return;
+            }
+          } else {
+            // If no active annotation ID is set, use the current annotation
+            if (currentAnnotation) {
+              setActiveAnnotationId(currentAnnotation.id);
+            }
+          }
+        }
+      }
+
+      // Handle automatic scroll — uses shared visualTime for alignment with playhead
+      if (isAutomaticScrollRef.current && scrollContainerRef.current && duration > 0) {
+        const container = scrollContainerRef.current;
+        const pixelPosition = (visualTime * sr) / spp;
+        const containerWidth = container.clientWidth;
+
+        // Continuously scroll to keep playhead centered.
+        // Math.round prevents sub-pixel jitter from browser integer rounding.
+        const targetScrollLeft = Math.round(Math.max(0, pixelPosition - containerWidth / 2));
+        container.scrollLeft = targetScrollLeft;
+      }
+
+      // Check if we've reached the playback end time (for selection playback)
+      if (playbackEndTimeRef.current !== null && time >= playbackEndTimeRef.current) {
+        // Stop playback at selection end (selection playback is separate from looping)
+        if (engineRef.current) {
+          engineRef.current.stop();
+        }
+        setIsPlaying(false);
+        currentTimeRef.current = playbackEndTimeRef.current;
+        setCurrentTime(playbackEndTimeRef.current);
+        playbackEndTimeRef.current = null; // Clear the end time
+        return;
+      }
+
+      // Loop is handled natively by Tone.js Transport (Transport.loop/loopStart/loopEnd).
+      // Transport.seconds auto-wraps at loop boundaries, so getPlaybackTime() returns
+      // the correct position without manual detection here.
+
+      if (time >= duration && !indefinitePlaybackRef.current) {
+        // Stop playback - inline to avoid circular dependency
+        if (engineRef.current) {
+          engineRef.current.stop();
+        }
+        setIsPlaying(false);
+        currentTimeRef.current = playStartPositionRef.current;
+        setCurrentTime(playStartPositionRef.current);
+        setActiveAnnotationId(null);
+        return;
+      }
+      startAnimationFrameLoop(updateTime);
+    };
+    startAnimationFrameLoop(updateTime);
+  }, [duration, setActiveAnnotationId, startAnimationFrameLoop, getPlaybackTime]);
+
+  const stopAnimationLoop = stopAnimationFrameLoop;
+
+  // Restart animation loop and reschedule playout when continuousPlay changes during playback
+  // This ensures the loop always has the current continuousPlay value
+  // and removes duration limits when switching to continuous play
+  useEffect(() => {
+    const reschedulePlayback = async () => {
+      if (isPlaying && animationFrameRef.current && engineRef.current) {
+        // When toggling continuous play ON, reschedule playout without duration limit
+        // so audio continues past the current annotation boundary
+        if (continuousPlay) {
+          const currentPos = currentTimeRef.current;
+
+          // Stop current playout (which may have duration limit + pause callback)
+          engineRef.current.stop();
+          stopAnimationLoop();
+
+          const context = getContext();
+          const timeNow = context.currentTime;
+          playbackStartTimeRef.current = timeNow;
+          audioStartPositionRef.current = currentPos;
+
+          // Play without duration - will play to end of track
+          engineRef.current.play(currentPos);
+          startAnimationLoop();
+        } else {
+          // Just restart animation loop for continuous play OFF
+          stopAnimationLoop();
+          startAnimationLoop();
+        }
+      }
+    };
+
+    reschedulePlayback().catch((err) => {
+      console.warn('[waveform-playlist] Failed to reschedule playback:', err);
+      setIsPlaying(false);
+      stopAnimationLoop();
+    });
+  }, [continuousPlay, isPlaying, startAnimationLoop, stopAnimationLoop, animationFrameRef]);
+
+  // Resume playback after tracks change (e.g., after splitting a clip during playback)
+  useEffect(() => {
+    const resumePlayback = async () => {
+      if (pendingResumeRef.current && engineRef.current) {
+        const { position } = pendingResumeRef.current;
+        pendingResumeRef.current = null;
+
+        const context = getContext();
+        const timeNow = context.currentTime;
+        playbackStartTimeRef.current = timeNow;
+        audioStartPositionRef.current = position;
+
+        if (!audioInitializedRef.current) {
+          await engineRef.current.init();
+          audioInitializedRef.current = true;
+        }
+
+        engineRef.current.play(position);
+        setIsPlaying(true);
+        startAnimationLoop();
+      }
+    };
+
+    resumePlayback().catch((err) => {
+      console.warn('[waveform-playlist] Failed to resume playback after track change:', err);
+      setIsPlaying(false);
+      stopAnimationLoop();
+    });
+  }, [tracks, startAnimationLoop, stopAnimationLoop]);
+
+  // Playback controls
+  const play = useCallback(
+    async (startTime?: number, playDuration?: number) => {
+      if (!engineRef.current) return;
+
+      const actualStartTime = startTime ?? currentTimeRef.current;
+      playStartPositionRef.current = actualStartTime;
+
+      // Update currentTimeRef to match the actual start position
+      // This ensures the animation loop starts from the correct position
+      currentTimeRef.current = actualStartTime;
+
+      // Stop existing playback and animation loop before restarting.
+      // engine.stop() resets engine._currentTime to _playStartPosition (could be 0)
+      // and sets _isPlaying=false. AnimatedPlayhead's RAF may fire during this
+      // window and call engine.getCurrentTime() which would return 0.
+      // The seek() immediately sets _currentTime to the intended start position,
+      // preventing the cursor flash.
+      engineRef.current.stop();
+      engineRef.current.seek(actualStartTime);
+      stopAnimationLoop();
+
+      // Record timing for accurate position tracking using Tone.js context
+      const context = getContext();
+      // Tone.js context wraps Web Audio - need to use .currentTime from wrapped context
+      const startTimeNow = context.currentTime;
+      playbackStartTimeRef.current = startTimeNow;
+      audioStartPositionRef.current = actualStartTime;
+
+      // Set playback end time if playing with duration (e.g., selection playback)
+      playbackEndTimeRef.current =
+        playDuration !== undefined ? actualStartTime + playDuration : null;
+
+      // Don't set up playback complete callback for annotations
+      // The animation loop handles stopping at annotation boundaries
+      // This avoids callback timing issues when switching between annotations
+
+      // Ensure AudioContext is resumed (requires user gesture, no-op after first call).
+      // Guarded by ref so subsequent plays skip the await entirely.
+      if (!audioInitializedRef.current) {
+        await engineRef.current.init();
+        audioInitializedRef.current = true;
+      }
+
+      const endTime = playDuration !== undefined ? actualStartTime + playDuration : undefined;
+      try {
+        engineRef.current.play(actualStartTime, endTime);
+      } catch (err) {
+        console.warn('[waveform-playlist] Playback failed to start:', err);
+        stopAnimationLoop();
+        return;
+      }
+      setIsPlaying(true);
+      startAnimationLoop();
+    },
+    [startAnimationLoop, stopAnimationLoop]
+  );
+
+  const pause = useCallback(() => {
+    if (!engineRef.current) return;
+
+    // Get current position from engine (auto-wraps at loop boundaries)
+    const pauseTime = getPlaybackTime();
+
+    engineRef.current.pause();
+    setIsPlaying(false);
+    stopAnimationLoop();
+
+    // Update to the calculated pause position
+    currentTimeRef.current = pauseTime;
+    setCurrentTime(pauseTime);
+  }, [stopAnimationLoop, getPlaybackTime]);
+
+  const stop = useCallback(() => {
+    if (!engineRef.current) return;
+
+    engineRef.current.stop();
+    setIsPlaying(false);
+    stopAnimationLoop();
+
+    // Return cursor to where playback started (Audacity-style)
+    currentTimeRef.current = playStartPositionRef.current;
+    setCurrentTime(playStartPositionRef.current);
+    setActiveAnnotationId(null);
+  }, [stopAnimationLoop, setActiveAnnotationId]);
+
+  // Seek to a specific time - works whether playing or stopped
+  const seekTo = useCallback(
+    (time: number) => {
+      // Clamp time to valid range
+      const clampedTime = Math.max(0, Math.min(time, duration));
+
+      // Update the current time state
+      currentTimeRef.current = clampedTime;
+      setCurrentTime(clampedTime);
+
+      // If currently playing, restart at the new position.
+      // play() handles stop+seek+restart internally.
+      if (isPlaying && engineRef.current) {
+        play(clampedTime);
+      }
+    },
+    [duration, isPlaying, play]
+  );
+
+  // Track controls
+  const setTrackMute = useCallback(
+    (trackIndex: number, muted: boolean) => {
+      const trackId = tracksRef.current[trackIndex]?.id;
+      if (!trackId) return;
+
+      const newStates = [...trackStates];
+      newStates[trackIndex] = { ...newStates[trackIndex], muted };
+      setTrackStates(newStates);
+
+      if (engineRef.current) {
+        engineRef.current.setTrackMute(trackId, muted);
+      }
+    },
+    [trackStates]
+  );
+
+  const setTrackSolo = useCallback(
+    (trackIndex: number, soloed: boolean) => {
+      const trackId = tracksRef.current[trackIndex]?.id;
+      if (!trackId) return;
+
+      const newStates = [...trackStates];
+      newStates[trackIndex] = { ...newStates[trackIndex], soloed };
+      setTrackStates(newStates);
+
+      if (engineRef.current) {
+        engineRef.current.setTrackSolo(trackId, soloed);
+      }
+    },
+    [trackStates]
+  );
+
+  const setTrackVolume = useCallback(
+    (trackIndex: number, volume: number) => {
+      const trackId = tracksRef.current[trackIndex]?.id;
+      if (!trackId) return;
+
+      const newStates = [...trackStates];
+      newStates[trackIndex] = { ...newStates[trackIndex], volume };
+      setTrackStates(newStates);
+
+      if (engineRef.current) {
+        engineRef.current.setTrackVolume(trackId, volume);
+      }
+    },
+    [trackStates]
+  );
+
+  const setTrackPan = useCallback(
+    (trackIndex: number, pan: number) => {
+      const trackId = tracksRef.current[trackIndex]?.id;
+      if (!trackId) return;
+
+      const newStates = [...trackStates];
+      newStates[trackIndex] = { ...newStates[trackIndex], pan };
+      setTrackStates(newStates);
+
+      if (engineRef.current) {
+        engineRef.current.setTrackPan(trackId, pan);
+      }
+    },
+    [trackStates]
+  );
+
+  // Selection — wraps hook setter with playback side-effects (provider concern).
+  const setSelection = useCallback(
+    (start: number, end: number) => {
+      setSelectionEngine(start, end);
+      currentTimeRef.current = start;
+      setCurrentTime(start);
+
+      if (isPlaying && engineRef.current) {
+        // Stop + seek before restarting playback from selection start.
+        // engine.stop() resets _currentTime and _isPlaying, creating a window
+        // where getCurrentTime() returns wrong value. seek() immediately
+        // corrects _currentTime so any RAF firing in between reads the
+        // intended position. engine.play() then restarts everything.
+        engineRef.current.stop();
+        engineRef.current.seek(start);
+        engineRef.current.play(start);
+      }
+    },
+    [isPlaying, setSelectionEngine]
+  );
+
+  // Memoize setScrollContainer callback
+  const setScrollContainer = useCallback((element: HTMLDivElement | null) => {
+    scrollContainerRef.current = element;
+  }, []);
+
+  // Stable callback ref for onAnnotationsChange to avoid re-creating controls context
+  const onAnnotationsChangeRef = useRef(onAnnotationsChange);
+  onAnnotationsChangeRef.current = onAnnotationsChange;
+
+  const setAnnotations: React.Dispatch<React.SetStateAction<AnnotationData[]>> = useCallback(
+    (action) => {
+      const updated = typeof action === 'function' ? action(annotationsRef.current) : action;
+      if (!onAnnotationsChangeRef.current) {
+        if (process.env.NODE_ENV !== 'production') {
+          console.warn(
+            'waveform-playlist: setAnnotations was called but no onAnnotationsChange callback is provided. ' +
+              'Annotation edits will not persist. Pass onAnnotationsChange to WaveformPlaylistProvider to handle annotation updates.'
+          );
+        }
+        return;
+      }
+      onAnnotationsChangeRef.current(updated);
+    },
+    []
+  );
+
+  const sampleRate = sampleRateRef.current;
+  const timeScaleHeight = timescale ? 30 : 0;
+  const minimumPlaylistHeight = tracks.length * waveHeight + timeScaleHeight;
+
+  // Split context values for performance optimization
+  // Animation context only re-renders consumers on discrete events
+  // (play/pause/stop/seek), never during the animation loop itself
+
+  const animationValue: PlaybackAnimationContextValue = useMemo(
+    () => ({
+      isPlaying,
+      currentTime,
+      currentTimeRef,
+      playbackStartTimeRef,
+      audioStartPositionRef,
+      getPlaybackTime,
+      registerFrameCallback,
+      unregisterFrameCallback,
+    }),
+    [
+      isPlaying,
+      currentTime,
+      currentTimeRef,
+      playbackStartTimeRef,
+      audioStartPositionRef,
+      getPlaybackTime,
+      registerFrameCallback,
+      unregisterFrameCallback,
+    ]
+  );
+
+  const stateValue: PlaylistStateContextValue = useMemo(
+    () => ({
+      continuousPlay,
+      linkEndpoints,
+      annotationsEditable,
+      isAutomaticScroll,
+      isLoopEnabled,
+      annotations,
+      activeAnnotationId,
+      selectionStart,
+      selectionEnd,
+      selectedTrackId,
+      loopStart,
+      loopEnd,
+      indefinitePlayback,
+      canUndo,
+      canRedo,
+    }),
+    [
+      continuousPlay,
+      linkEndpoints,
+      annotationsEditable,
+      isAutomaticScroll,
+      isLoopEnabled,
+      annotations,
+      activeAnnotationId,
+      selectionStart,
+      selectionEnd,
+      selectedTrackId,
+      loopStart,
+      loopEnd,
+      indefinitePlayback,
+      canUndo,
+      canRedo,
+    ]
+  );
+
+  const setCurrentTimeControl = useCallback(
+    (time: number) => {
+      currentTimeRef.current = time;
+      setCurrentTime(time);
+    },
+    [currentTimeRef]
+  );
+
+  const setAutomaticScrollControl = useCallback((enabled: boolean) => {
+    setIsAutomaticScroll(enabled);
+  }, []);
+
+  const controlsValue: PlaylistControlsContextValue = useMemo(
+    () => ({
+      // Playback controls
+      play,
+      pause,
+      stop,
+      seekTo,
+      setCurrentTime: setCurrentTimeControl,
+
+      // Track controls
+      setTrackMute,
+      setTrackSolo,
+      setTrackVolume,
+      setTrackPan,
+
+      // Selection
+      setSelection,
+      setSelectedTrackId: setSelectedTrackIdControl,
+
+      // Time format
+      setTimeFormat,
+      formatTime,
+
+      // Zoom
+      zoomIn: zoom.zoomIn,
+      zoomOut: zoom.zoomOut,
+
+      // Master volume
+      setMasterVolume,
+
+      // Automatic scroll
+      setAutomaticScroll: setAutomaticScrollControl,
+      setScrollContainer,
+      scrollContainerRef,
+
+      // Annotation controls
+      setContinuousPlay,
+      setLinkEndpoints,
+      setAnnotationsEditable,
+      setAnnotations,
+      setActiveAnnotationId,
+
+      // Loop controls
+      setLoopEnabled,
+      setLoopRegion,
+      setLoopRegionFromSelection,
+      clearLoopRegion,
+
+      // Undo/redo
+      undo,
+      redo,
+    }),
+    [
+      play,
+      pause,
+      stop,
+      seekTo,
+      setCurrentTimeControl,
+      setTrackMute,
+      setTrackSolo,
+      setTrackVolume,
+      setTrackPan,
+      setSelection,
+      setSelectedTrackIdControl,
+      setTimeFormat,
+      formatTime,
+      zoom.zoomIn,
+      zoom.zoomOut,
+      setMasterVolume,
+      setAutomaticScrollControl,
+      setScrollContainer,
+      scrollContainerRef,
+      setContinuousPlay,
+      setLinkEndpoints,
+      setAnnotationsEditable,
+      setAnnotations,
+      setActiveAnnotationId,
+      setLoopEnabled,
+      setLoopRegion,
+      setLoopRegionFromSelection,
+      clearLoopRegion,
+      undo,
+      redo,
+    ]
+  );
+
+  const dataValue: PlaylistDataContextValue = useMemo(
+    () => ({
+      duration,
+      audioBuffers,
+      peaksDataArray,
+      trackStates,
+      tracks,
+      sampleRate,
+      waveHeight,
+      timeScaleHeight,
+      minimumPlaylistHeight,
+      controls,
+      playoutRef: engineRef,
+      samplesPerPixel,
+      timeFormat,
+      masterVolume,
+      canZoomIn: zoom.canZoomIn,
+      canZoomOut: zoom.canZoomOut,
+      barWidth,
+      barGap,
+      progressBarWidth,
+      isReady,
+      mono,
+      isDraggingRef,
+      onTracksChange,
+    }),
+    [
+      duration,
+      audioBuffers,
+      peaksDataArray,
+      trackStates,
+      tracks,
+      sampleRate,
+      waveHeight,
+      timeScaleHeight,
+      minimumPlaylistHeight,
+      controls,
+      engineRef,
+      samplesPerPixel,
+      timeFormat,
+      masterVolume,
+      zoom.canZoomIn,
+      zoom.canZoomOut,
+      barWidth,
+      barGap,
+      progressBarWidth,
+      isReady,
+      mono,
+      isDraggingRef,
+      onTracksChange,
+    ]
+  );
+
+  // Merge user theme with default theme
+  const mergedTheme = { ...defaultTheme, ...userTheme };
+
+  return (
+    <ThemeProvider theme={mergedTheme}>
+      <PlaybackAnimationContext.Provider value={animationValue}>
+        <PlaylistStateContext.Provider value={stateValue}>
+          <PlaylistControlsContext.Provider value={controlsValue}>
+            <PlaylistDataContext.Provider value={dataValue}>
+              {children}
+            </PlaylistDataContext.Provider>
+          </PlaylistControlsContext.Provider>
+        </PlaylistStateContext.Provider>
+      </PlaybackAnimationContext.Provider>
+    </ThemeProvider>
+  );
+};
+
+// Individual hooks for each context - use these for optimal performance
+// Components only re-render when their specific context data changes
+
+export const usePlaybackAnimation = () => {
+  const context = useContext(PlaybackAnimationContext);
+  if (!context) {
+    throw new Error('usePlaybackAnimation must be used within WaveformPlaylistProvider');
+  }
+  return context;
+};
+
+export const usePlaylistState = () => {
+  const context = useContext(PlaylistStateContext);
+  if (!context) {
+    throw new Error('usePlaylistState must be used within WaveformPlaylistProvider');
+  }
+  return context;
+};
+
+export const usePlaylistControls = () => {
+  const context = useContext(PlaylistControlsContext);
+  if (!context) {
+    throw new Error('usePlaylistControls must be used within WaveformPlaylistProvider');
+  }
+  return context;
+};
+
+export const usePlaylistData = () => {
+  const context = useContext(PlaylistDataContext);
+  if (!context) {
+    throw new Error('usePlaylistData must be used within WaveformPlaylistProvider');
+  }
+  return context;
+};

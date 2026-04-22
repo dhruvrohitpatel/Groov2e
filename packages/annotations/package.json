@@ -1,0 +1,62 @@
+{
+  "name": "@waveform-playlist/annotations",
+  "version": "11.3.1",
+  "description": "Annotation support for waveform-playlist",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "waveform",
+    "audio",
+    "annotations",
+    "waveform-playlist"
+  ],
+  "author": "Naomi Aro",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/naomiaro/waveform-playlist.git",
+    "directory": "packages/annotations"
+  },
+  "homepage": "https://naomiaro.github.io/waveform-playlist",
+  "bugs": {
+    "url": "https://github.com/naomiaro/waveform-playlist/issues"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "devDependencies": {
+    "@types/react": "^18.2.45",
+    "@types/styled-components": "^5.1.26",
+    "@waveform-playlist/browser": "workspace:*",
+    "tsup": "^8.0.1",
+    "typescript": "^5.3.3",
+    "vitest": "^3.0.0"
+  },
+  "dependencies": {
+    "@waveform-playlist/core": "workspace:*",
+    "@waveform-playlist/ui-components": "workspace:*"
+  },
+  "peerDependencies": {
+    "@dnd-kit/react": "^0.3.0",
+    "@waveform-playlist/browser": "workspace:*",
+    "react": "^18.0.0",
+    "styled-components": "^6.0.0"
+  }
+}

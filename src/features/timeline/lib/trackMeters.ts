@@ -1,5 +1,5 @@
 import { Tone } from "@waveform-playlist/browser";
-import type { TrackEffectsFunction } from "@waveform-playlist/playout";
+import type { TrackEffectsFunction } from "@waveform-playlist/core";
 
 type ToneMeter = InstanceType<typeof Tone.Meter>;
 
@@ -13,7 +13,7 @@ class TrackMeterRegistry {
   getOrCreateMeter(trackId: string): ToneMeter {
     let meter = this.meters.get(trackId);
     if (!meter) {
-      meter = new Tone.Meter({ channels: 2, normalRange: false, smoothing: 0.8 });
+      meter = new Tone.Meter({ channelCount: 2, normalRange: false, smoothing: 0.8 });
       this.meters.set(trackId, meter);
     }
     return meter;

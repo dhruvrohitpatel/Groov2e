@@ -9,3 +9,14 @@ dist-ssr
 .pnpm-store
 .claude
 *.tsbuildinfo
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/settings.json
+
+# Test / coverage
+coverage/
+
+# Storybook
+storybook-static/

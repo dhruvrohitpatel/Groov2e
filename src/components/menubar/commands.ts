@@ -253,7 +253,7 @@ export function buildMenuGroups(): MenuGroup[] {
             id: 'track.add',
             label: 'Add Track',
             shortcut: SC.addTrack,
-            run: () => trackController.addTrack(),
+            run: () => { trackController.addTrack(); },
           },
           {
             id: 'track.duplicate',

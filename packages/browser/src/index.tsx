@@ -1,0 +1,165 @@
+// Re-export Tone.js for convenience
+import * as Tone from 'tone';
+export { Tone };
+
+// Export types from playout
+export type { EffectsFunction, TrackEffectsFunction } from '@waveform-playlist/playout';
+
+// Export new flexible/headless API
+export {
+  WaveformPlaylistProvider,
+  usePlaybackAnimation,
+  usePlaylistState,
+  usePlaylistControls,
+  usePlaylistData,
+} from './WaveformPlaylistContext';
+export type { WaveformTrack, TrackState, FrameData } from './WaveformPlaylistContext';
+
+// Export MediaElement-based provider (single-track with playback rate control)
+export {
+  MediaElementPlaylistProvider,
+  useMediaElementAnimation,
+  useMediaElementState,
+  useMediaElementControls,
+  useMediaElementData,
+} from './MediaElementPlaylistContext';
+export type {
+  MediaElementTrackConfig,
+  MediaElementAnimationContextValue,
+  MediaElementStateContextValue,
+  MediaElementControlsContextValue,
+  MediaElementDataContextValue,
+} from './MediaElementPlaylistContext';
+export {
+  useClipDragHandlers,
+  useAnnotationDragHandlers,
+  useAnnotationKeyboardControls,
+  useDragSensors,
+  useClipSplitting,
+  useKeyboardShortcuts,
+  getShortcutLabel,
+  usePlaybackShortcuts,
+  useAudioTracks,
+  useZoomControls,
+  useTimeFormat,
+  useMasterVolume,
+  useMasterAnalyser,
+  useDynamicEffects,
+  useTrackDynamicEffects,
+  useExportWav,
+  useDynamicTracks,
+  useOutputMeter,
+} from './hooks';
+export type {
+  AudioTrackConfig,
+  UsePlaybackShortcutsOptions,
+  UsePlaybackShortcutsReturn,
+  ZoomControls,
+  TimeFormatControls,
+  MasterVolumeControls,
+  UseDynamicEffectsReturn,
+  ActiveEffect,
+  UseTrackDynamicEffectsReturn,
+  TrackActiveEffect,
+  TrackEffectsState,
+  ExportOptions,
+  ExportResult,
+  UseExportWavReturn,
+  TrackSource,
+  TrackLoadError,
+  UseDynamicTracksReturn,
+  UseOutputMeterOptions,
+  UseOutputMeterReturn,
+} from './hooks';
+
+// Export effect definitions and factory
+export {
+  effectDefinitions,
+  effectCategories,
+  getEffectDefinition,
+  getEffectsByCategory,
+} from './effects';
+export type { EffectDefinition, EffectParameter, ParameterType } from './effects';
+export { createEffectInstance, createEffectChain } from './effects';
+export type { EffectInstance } from './effects';
+export {
+  PlayButton,
+  PauseButton,
+  StopButton,
+  RewindButton,
+  FastForwardButton,
+  SkipBackwardButton,
+  SkipForwardButton,
+  LoopButton,
+  SetLoopRegionButton,
+  ClearAllButton,
+  ZoomInButton,
+  ZoomOutButton,
+  MasterVolumeControl,
+  TimeFormatSelect,
+  AudioPosition,
+  SelectionTimeInputs,
+  AutomaticScrollCheckbox,
+  ContinuousPlayCheckbox,
+  LinkEndpointsCheckbox,
+  EditableCheckbox,
+  DownloadAnnotationsButton,
+  ExportWavButton,
+  Waveform,
+  MediaElementWaveform,
+  MediaElementPlaylist,
+  MediaElementAnnotationList,
+  PlaylistVisualization,
+  PlaylistAnnotationList,
+  KeyboardShortcuts,
+} from './components';
+export type { KeyboardShortcutsProps } from './components/KeyboardShortcuts';
+export type { ClearAllButtonProps } from './components/PlaybackControls';
+export type { ExportWavButtonProps } from './components/ExportControls';
+export type { WaveformProps } from './components/Waveform';
+export type { MediaElementWaveformProps } from './components/MediaElementWaveform';
+export type { MediaElementPlaylistProps } from './components/MediaElementPlaylist';
+export type { MediaElementAnnotationListProps } from './components/MediaElementAnnotationList';
+export type { PlaylistVisualizationProps } from './components/PlaylistVisualization';
+export type { PlaylistAnnotationListProps } from './components/PlaylistAnnotationList';
+
+// Re-export TimeFormat type from ui-components for convenience
+export type { TimeFormat } from '@waveform-playlist/ui-components';
+
+// Re-export core types for convenience
+export type { ClipTrack, AudioClip, Fade, AnnotationData } from '@waveform-playlist/core';
+
+// Export annotation callback types for Waveform components
+export type { GetAnnotationBoxLabelFn, OnAnnotationUpdateFn } from './types/annotations';
+
+// Annotation integration context (for optional annotation support)
+export {
+  AnnotationIntegrationProvider,
+  useAnnotationIntegration,
+} from './AnnotationIntegrationContext';
+export type { AnnotationIntegration } from './AnnotationIntegrationContext';
+
+// Spectrogram integration context (for optional spectrogram support)
+export {
+  SpectrogramIntegrationProvider,
+  useSpectrogramIntegration,
+} from './SpectrogramIntegrationContext';
+export type { SpectrogramIntegration } from './SpectrogramIntegrationContext';
+
+// Export ClipInteractionProvider for encapsulated drag/trim/snap/collision setup
+export { ClipInteractionProvider } from './components/ClipInteractionProvider';
+export type { ClipInteractionProviderProps } from './components/ClipInteractionProvider';
+export { useClipInteractionEnabled } from './contexts/ClipInteractionContext';
+
+// Export modifiers and plugins for drag-and-drop
+export { ClipCollisionModifier } from './modifiers/ClipCollisionModifier';
+export { SnapToGridModifier } from './modifiers/SnapToGridModifier';
+export { noDropAnimationPlugins } from './plugins/noDropAnimationPlugins';
+
+// Export waveform-data.js utilities
+export {
+  loadWaveformData,
+  waveformDataToPeaks,
+  loadPeaksFromWaveformData,
+  getWaveformDataMetadata,
+} from './waveformDataLoader';
