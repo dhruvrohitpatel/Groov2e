@@ -351,7 +351,7 @@ importers:
         version: 9.0.8
       '@storybook/addon-docs':
         specifier: ^10.0.8
-        version: 10.3.5(@types/react@18.3.28)(esbuild@0.27.7)(rollup@4.60.2)(storybook@10.3.5(@testing-library/dom@10.4.1)(react-dom@18.3.1(react@18.3.1))(react@18.3.1))(vite@5.4.21(@types/node@25.6.0)(terser@5.46.1))(webpack@5.106.2(@swc/core@1.15.30)(esbuild@0.27.7))
+        version: 10.3.5(@types/react@18.3.28)(esbuild@0.27.7)(rollup@4.60.2)(storybook@10.3.5(@testing-library/dom@10.4.1)(react-dom@18.3.1(react@18.3.1))(react@18.3.1))(vite@5.4.21(@types/node@20.19.39)(terser@5.46.1))(webpack@5.106.2(@swc/core@1.15.30)(esbuild@0.27.7))
       '@storybook/addon-webpack5-compiler-swc':
         specifier: ^4.0.2
         version: 4.0.3(storybook@10.3.5(@testing-library/dom@10.4.1)(react-dom@18.3.1(react@18.3.1))(react@18.3.1))(webpack@5.106.2(@swc/core@1.15.30)(esbuild@0.27.7))
@@ -361,6 +361,9 @@ importers:
       '@testing-library/react':
         specifier: ^16.3.2
         version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@18.3.7(@types/react@18.3.28))(@types/react@18.3.28)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@types/node':
+        specifier: ^20.19.39
+        version: 20.19.39
       '@types/react':
         specifier: ^18.2.45
         version: 18.3.28
@@ -393,7 +396,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.0.0
-        version: 3.2.4(@types/node@25.6.0)(jsdom@28.1.0)(terser@5.46.1)
+        version: 3.2.4(@types/node@20.19.39)(jsdom@28.1.0)(terser@5.46.1)
 
   packages/worklets:
     devDependencies:
@@ -3539,10 +3542,10 @@ snapshots:
 
   '@storybook/addon-actions@9.0.8': {}
 
-  '@storybook/addon-docs@10.3.5(@types/react@18.3.28)(esbuild@0.27.7)(rollup@4.60.2)(storybook@10.3.5(@testing-library/dom@10.4.1)(react-dom@18.3.1(react@18.3.1))(react@18.3.1))(vite@5.4.21(@types/node@25.6.0)(terser@5.46.1))(webpack@5.106.2(@swc/core@1.15.30)(esbuild@0.27.7))':
+  '@storybook/addon-docs@10.3.5(@types/react@18.3.28)(esbuild@0.27.7)(rollup@4.60.2)(storybook@10.3.5(@testing-library/dom@10.4.1)(react-dom@18.3.1(react@18.3.1))(react@18.3.1))(vite@5.4.21(@types/node@20.19.39)(terser@5.46.1))(webpack@5.106.2(@swc/core@1.15.30)(esbuild@0.27.7))':
     dependencies:
       '@mdx-js/react': 3.1.1(@types/react@18.3.28)(react@18.3.1)
-      '@storybook/csf-plugin': 10.3.5(esbuild@0.27.7)(rollup@4.60.2)(storybook@10.3.5(@testing-library/dom@10.4.1)(react-dom@18.3.1(react@18.3.1))(react@18.3.1))(vite@5.4.21(@types/node@25.6.0)(terser@5.46.1))(webpack@5.106.2(@swc/core@1.15.30)(esbuild@0.27.7))
+      '@storybook/csf-plugin': 10.3.5(esbuild@0.27.7)(rollup@4.60.2)(storybook@10.3.5(@testing-library/dom@10.4.1)(react-dom@18.3.1(react@18.3.1))(react@18.3.1))(vite@5.4.21(@types/node@20.19.39)(terser@5.46.1))(webpack@5.106.2(@swc/core@1.15.30)(esbuild@0.27.7))
       '@storybook/icons': 2.0.1(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       '@storybook/react-dom-shim': 10.3.5(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(storybook@10.3.5(@testing-library/dom@10.4.1)(react-dom@18.3.1(react@18.3.1))(react@18.3.1))
       react: 18.3.1
@@ -3597,14 +3600,14 @@ snapshots:
       storybook: 10.3.5(@testing-library/dom@10.4.1)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       ts-dedent: 2.2.0
 
-  '@storybook/csf-plugin@10.3.5(esbuild@0.27.7)(rollup@4.60.2)(storybook@10.3.5(@testing-library/dom@10.4.1)(react-dom@18.3.1(react@18.3.1))(react@18.3.1))(vite@5.4.21(@types/node@25.6.0)(terser@5.46.1))(webpack@5.106.2(@swc/core@1.15.30)(esbuild@0.27.7))':
+  '@storybook/csf-plugin@10.3.5(esbuild@0.27.7)(rollup@4.60.2)(storybook@10.3.5(@testing-library/dom@10.4.1)(react-dom@18.3.1(react@18.3.1))(react@18.3.1))(vite@5.4.21(@types/node@20.19.39)(terser@5.46.1))(webpack@5.106.2(@swc/core@1.15.30)(esbuild@0.27.7))':
     dependencies:
       storybook: 10.3.5(@testing-library/dom@10.4.1)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       unplugin: 2.3.11
     optionalDependencies:
       esbuild: 0.27.7
       rollup: 4.60.2
-      vite: 5.4.21(@types/node@25.6.0)(terser@5.46.1)
+      vite: 5.4.21(@types/node@20.19.39)(terser@5.46.1)
       webpack: 5.106.2(@swc/core@1.15.30)(esbuild@0.27.7)
 
   '@storybook/global@5.0.0': {}
