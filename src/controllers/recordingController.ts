@@ -8,6 +8,7 @@ import {
   projectPersistenceService,
 } from "../features/project/services/projectPersistenceService";
 import { getBarDurationSeconds, getBeatDurationSeconds } from "../features/timeline/lib/timelineMath";
+import { createId } from "../lib/id";
 
 function startMetronomeAtCursor(startTimeSeconds: number) {
   const state = useGroovyStore.getState();
@@ -185,11 +186,13 @@ export const recordingController = {
           : null) ??
         (state.selectedTrackId ? state.tracks.find((track) => track.id === state.selectedTrackId) : null);
 
+      const clipId = createId("clip");
       const persistedAudio = await projectPersistenceService.persistRecordedAudio({
         blob: result.blob,
         mimeType: result.mimeType,
         preferredBaseName: buildDefaultRecordedTakeName(recordTargetTrack?.name ?? "recording"),
         projectDirectoryPath: state.projectFile.projectDirectoryPath,
+        clipId,
       });
 
       metronomeService.stop();

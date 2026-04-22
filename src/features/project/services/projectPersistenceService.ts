@@ -5,6 +5,8 @@ import { createId } from "../../../lib/id";
 import { createInitialGroovyState } from "../../../lib/mockProject";
 import type { Clip, TakeGroup } from "../../../types/models";
 import type { PersistedClip, PersistedProjectFile, ProjectPersistenceResult } from "../types";
+import { putBlob, IDB_PREFIX } from "./audioBlobStore";
+import { getOrCreateUrl } from "../../audio/services/blobUrlRegistry";
 import {
   buildProjectAudioPath,
   buildScratchAudioDirectory,
@@ -22,7 +24,7 @@ import {
 } from "./tauriPersistenceService";
 import { useGroovyStore } from "../../../store/useGroovyStore";
 
-interface RecordedAssetResult {
+export interface RecordedAssetResult {
   fileUrl: string;
   filePath: string | null;
   mimeType: string;
@@ -42,13 +44,15 @@ class ProjectPersistenceService {
     mimeType: string;
     preferredBaseName: string;
     projectDirectoryPath: string | null;
+    clipId: string;
   }): Promise<RecordedAssetResult> {
     if (!isTauriRuntime()) {
+      await putBlob(options.clipId, options.blob);
       return {
-        fileUrl: URL.createObjectURL(options.blob),
-        filePath: null,
+        fileUrl: getOrCreateUrl(options.clipId, options.blob),
+        filePath: `${IDB_PREFIX}${options.clipId}`,
         mimeType: options.mimeType,
-        persisted: false,
+        persisted: true,
       };
     }
 
@@ -59,11 +63,12 @@ class ProjectPersistenceService {
       options.projectDirectoryPath ?? (await buildScratchAudioDirectory());
 
     if (!targetDirectoryPath) {
+      await putBlob(options.clipId, options.blob);
       return {
-        fileUrl: URL.createObjectURL(options.blob),
-        filePath: null,
+        fileUrl: getOrCreateUrl(options.clipId, options.blob),
+        filePath: `${IDB_PREFIX}${options.clipId}`,
         mimeType: options.mimeType,
-        persisted: false,
+        persisted: true,
       };
     }
 

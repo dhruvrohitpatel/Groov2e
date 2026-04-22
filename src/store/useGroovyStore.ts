@@ -1301,7 +1301,7 @@ export const useGroovyStore = create<GroovyStore>((set, get) => ({
           trackId: targetTrack.id,
           fileUrl: result.fileUrl,
           filePath: result.filePath ?? null,
-          sourceKind: result.filePath ? "file" : "appAsset",
+          sourceKind: result.filePath && !result.filePath.startsWith("idb://") ? "file" : "appAsset",
           name: clipLabel,
           startTime: recordStartTime,
           duration: result.durationSeconds,

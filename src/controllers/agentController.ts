@@ -4,6 +4,8 @@ import { createId } from "../lib/id";
 import { useGroovyStore } from "../store/useGroovyStore";
 import type { AgentClipAttachment } from "../types/agent";
 import type { ToolExecution } from "../features/agent/tools/toolRouter";
+import { putBlob, IDB_PREFIX } from "../features/project/services/audioBlobStore";
+import { getOrCreateUrl } from "../features/audio/services/blobUrlRegistry";
 
 function hashSeed(text: string): number {
   let hash = 2166136261;
@@ -144,14 +146,18 @@ export const agentController = {
       const enrichedPrompt = buildPromptForContext(prompt, ctx);
       const result = await generateMusicClip(enrichedPrompt, { trackName: message.attachment.trackName });
 
+      const attachKey = createId("clip");
+      await putBlob(attachKey, result.blob);
+      const audioUrl = getOrCreateUrl(attachKey, result.blob);
+
       useGroovyStore.getState().replaceAttachment(messageId, {
         kind: "clip",
         trackName: message.attachment.trackName,
-        audioUrl: result.audioUrl,
+        audioUrl,
         startTime: message.attachment.startTime,
         duration: result.duration,
         inserted: false,
-        seed: hashSeed(`${messageId}:${result.audioUrl}`),
+        seed: hashSeed(`${messageId}:${IDB_PREFIX}${attachKey}`),
         label: message.attachment.label,
       } satisfies AgentClipAttachment);
     } catch (error) {

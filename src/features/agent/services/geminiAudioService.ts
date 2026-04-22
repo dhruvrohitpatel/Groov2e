@@ -23,7 +23,7 @@ export function hasGeminiKey(): boolean {
 }
 
 export interface GeminiMusicResult {
-  audioUrl: string;
+  blob: Blob;
   mimeType: string;
   duration: number;
   trackName: string;
@@ -126,14 +126,71 @@ function encodeBufferToWav(buffer: AudioBuffer, seconds: number): { blob: Blob; 
   return { blob: new Blob([arrayBuffer], { type: "audio/wav" }), mimeType: "audio/wav" };
 }
 
+// Map raw Gemini SDK errors — which often come through as long JSON strings
+// like `{"error":{"code":503,"message":"...","status":"UNAVAILABLE"}}` —
+// into short, human-readable messages. Keeping the model's context clean
+// prevents the agent from echoing the raw JSON back to the user and lets it
+// offer a useful retry suggestion instead.
+function normalizeGenerateError(error: unknown): Error {
+  if (!(error instanceof Error)) {
+    return new Error("Audio generation failed for an unknown reason.");
+  }
+
+  const raw = error.message ?? "";
+  let status: string | undefined;
+  let code: number | undefined;
+  let message: string | undefined;
+
+  const jsonStart = raw.indexOf("{");
+  if (jsonStart >= 0) {
+    try {
+      const parsed = JSON.parse(raw.slice(jsonStart)) as {
+        error?: { status?: string; code?: number; message?: string };
+      };
+      status = parsed.error?.status;
+      code = parsed.error?.code;
+      message = parsed.error?.message;
+    } catch {
+      /* fall through */
+    }
+  }
+
+  if (status === "UNAVAILABLE" || code === 503) {
+    return new Error(
+      "Lyria is overloaded right now (high demand). Wait ~30s and try again.",
+    );
+  }
+  if (status === "RESOURCE_EXHAUSTED" || code === 429) {
+    return new Error(
+      "Lyria quota exhausted — you've hit the per-minute rate limit or run out of credits.",
+    );
+  }
+  if (status === "PERMISSION_DENIED" || code === 403) {
+    return new Error(
+      "Gemini rejected the API key (403). Check VITE_GEMINI_API_KEY in .env.local.",
+    );
+  }
+  if (status === "INVALID_ARGUMENT" || code === 400) {
+    return new Error(
+      `Lyria rejected the prompt${message ? `: ${message}` : ""}. Try rephrasing.`,
+    );
+  }
+  return new Error(message || raw || "Audio generation failed.");
+}
+
 export async function generateMusicClip(prompt: string, opts: GenerateOptions = {}): Promise<GeminiMusicResult> {
   const ai = getClient();
   const structured = buildStructuredPrompt(prompt, opts);
 
-  const response = await ai.models.generateContent({
-    model: MODEL_ID,
-    contents: structured,
-  });
+  let response;
+  try {
+    response = await ai.models.generateContent({
+      model: MODEL_ID,
+      contents: structured,
+    });
+  } catch (error) {
+    throw normalizeGenerateError(error);
+  }
 
   const parts = response.candidates?.[0]?.content?.parts ?? [];
   const audioPart = parts.find((part) => part.inlineData?.data);
@@ -155,37 +212,38 @@ export async function generateMusicClip(prompt: string, opts: GenerateOptions = 
   const targetSeconds =
     opts.bars && opts.bpm ? (opts.bars * 60 * 4) / opts.bpm : undefined;
 
-  // Try to decode and trim for bar-accurate output. If decoding fails we fall
-  // back to the raw blob — some browsers reject partial MP3 streams in
-  // decodeAudioData but will still play them via <audio>.
-  let finalBlob: Blob = new Blob([sourceBytes.buffer], { type: sourceMime });
-  let finalMime = sourceMime;
-  let duration = 30;
+  // Decode the raw Lyria bytes once, then ALWAYS re-encode to PCM WAV before
+  // handing the URL back to the app. Previously we only re-encoded when
+  // trimming was needed and otherwise kept the raw MP3 blob — but Chrome's
+  // `decodeAudioData` is flaky on partial MP3 streams served from blob URLs,
+  // which meant the timeline's clip-buffer pipeline would fail to decode the
+  // track and the clip would sit on the lane as an empty rectangle even
+  // though the tool reported success. Re-encoding to WAV guarantees the
+  // downstream decode will work.
+  //
+  // If decode fails here, the bytes are unusable — throwing is the right
+  // call so the tool returns ok:false and the agent can narrate accurately
+  // instead of confidently claiming it dropped a clip that silently failed.
+  let decoded: AudioBuffer;
   try {
     const ctx = getGlobalAudioContext();
     const decodeBuffer = new ArrayBuffer(sourceBytes.byteLength);
     new Uint8Array(decodeBuffer).set(sourceBytes);
-    const decoded = await ctx.decodeAudioData(decodeBuffer);
-    const usable = targetSeconds ? Math.min(targetSeconds, decoded.duration) : decoded.duration;
-
-    if (targetSeconds && Math.abs(usable - decoded.duration) > 0.05) {
-      const wav = encodeBufferToWav(decoded, usable);
-      finalBlob = wav.blob;
-      finalMime = wav.mimeType;
-      duration = usable;
-    } else {
-      duration = decoded.duration;
-    }
-  } catch {
-    duration = targetSeconds ?? 30;
+    decoded = await ctx.decodeAudioData(decodeBuffer);
+  } catch (error) {
+    const detail = error instanceof Error ? ` (${error.message})` : "";
+    throw new Error(
+      `Lyria returned audio that the browser couldn't decode${detail}. This usually clears on retry.`,
+    );
   }
 
-  const audioUrl = URL.createObjectURL(finalBlob);
+  const usable = targetSeconds ? Math.min(targetSeconds, decoded.duration) : decoded.duration;
+  const { blob: wavBlob, mimeType: wavMime } = encodeBufferToWav(decoded, usable);
 
   return {
-    audioUrl,
-    mimeType: finalMime,
-    duration,
+    blob: wavBlob,
+    mimeType: wavMime,
+    duration: usable,
     trackName: opts.trackName ?? "AI Clip",
     commentary,
     targetSeconds,

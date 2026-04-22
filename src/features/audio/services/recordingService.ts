@@ -9,7 +9,6 @@ export interface RecordingStartResult {
 
 export interface RecordingStopResult {
   blob: Blob;
-  objectUrl: string;
   mimeType: string;
   durationSeconds: number;
 }
@@ -121,7 +120,6 @@ class RecordingService {
 
         const result: RecordingStopResult = {
           blob,
-          objectUrl: URL.createObjectURL(blob),
           mimeType: blob.type || this.preparedMimeType,
           durationSeconds,
         };

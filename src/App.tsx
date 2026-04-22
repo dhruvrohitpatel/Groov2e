@@ -20,6 +20,8 @@ import { trackController } from './controllers/trackController';
 import { projectController } from './controllers/projectController';
 import { transportController } from './controllers/transportController';
 import { localProjectSnapshot } from './features/project/services/projectPersistenceService';
+import { getBlob, IDB_PREFIX } from './features/project/services/audioBlobStore';
+import { getOrCreateUrl, revokeAll, revokeForClip } from './features/audio/services/blobUrlRegistry';
 
 export function App() {
   const project = useGroovyStore((s) => s.project);
@@ -66,6 +68,47 @@ export function App() {
         currentTime: snapshot.cursorPosition ?? state.transport.currentTime,
       },
     }));
+
+    // Rehydrate IDB-backed clips: restore blob URLs for any clip whose filePath
+    // starts with "idb://". Runs after setState so the clips are in the store.
+    const idbClips = Object.values(snapshot.clips ?? {}).filter(
+      (c) => c.filePath?.startsWith(IDB_PREFIX),
+    );
+    if (idbClips.length === 0) return;
+
+    void (async () => {
+      const updates: Record<string, { fileUrl: string }> = {};
+      await Promise.all(
+        idbClips.map(async (clip) => {
+          const idbKey = clip.filePath!.slice(IDB_PREFIX.length);
+          const blob = await getBlob(idbKey);
+          if (blob) {
+            updates[clip.id] = { fileUrl: getOrCreateUrl(idbKey, blob) };
+          }
+        }),
+      );
+      if (Object.keys(updates).length === 0) return;
+      useGroovyStore.setState((s) => ({
+        clips: Object.fromEntries(
+          Object.entries(s.clips).map(([id, clip]) =>
+            updates[id] ? [id, { ...clip, fileUrl: updates[id].fileUrl }] : [id, clip],
+          ),
+        ),
+      }));
+    })();
+  }, []);
+
+  // Revoke blob URLs when clips are removed from the store to prevent C1 memory leaks.
+  useEffect(() => {
+    let prevClipIds = new Set(Object.keys(useGroovyStore.getState().clips));
+    const unsub = useGroovyStore.subscribe((state) => {
+      const currentIds = new Set(Object.keys(state.clips));
+      for (const id of prevClipIds) {
+        if (!currentIds.has(id)) revokeForClip(id);
+      }
+      prevClipIds = currentIds;
+    });
+    return () => { unsub(); revokeAll(); };
   }, []);
 
   useEffect(() => {

@@ -11,6 +11,8 @@ import {
 } from "../../../lib/musicalTime";
 import type { Clip, Track } from "../../../types/models";
 import { createId } from "../../../lib/id";
+import { putBlob, IDB_PREFIX } from "../../project/services/audioBlobStore";
+import { getOrCreateUrl } from "../../audio/services/blobUrlRegistry";
 
 // --------------------------------------------------------------------------
 // Tool registry for the agent. Every tool is a Zod-validated function that
@@ -598,15 +600,32 @@ const generation_generateAndInsertClip: ToolDefinition<
       .filter(Boolean)
       .join(" ");
 
-    snapshot(`Generate ${barsText} on ${trackName}`);
+    let result;
+    try {
+      result = await generateMusicClip(prompt, {
+        trackName,
+        bars,
+        bpm,
+        instrument,
+        styleHints: style || undefined,
+      });
+    } catch (error) {
+      // Surface Lyria/decoder failures as tool errors so the agent narrates
+      // accurately ("Lyria is overloaded, try again in 30s") instead of
+      // confidently claiming the clip was inserted.
+      return {
+        ok: false,
+        message:
+          error instanceof Error
+            ? error.message
+            : "Audio generation failed for an unknown reason.",
+      };
+    }
 
-    const result = await generateMusicClip(prompt, {
-      trackName,
-      bars,
-      bpm,
-      instrument,
-      styleHints: style || undefined,
-    });
+    // Push the undo snapshot only now — the Lyria call succeeded and we're
+    // about to mutate project state. This keeps the undo footer honest when
+    // generation fails and nothing actually changed.
+    snapshot(`Generate ${barsText} on ${trackName}`);
 
     let track = findTrackByName(trackName);
     if (!track) {
@@ -615,18 +634,26 @@ const generation_generateAndInsertClip: ToolDefinition<
       }
       const newId = trackController.addTrack(trackName);
       track = useGroovyStore.getState().tracks.find((t) => t.id === newId) ?? null;
-      if (!track) return { ok: false, message: "Failed to create track." };
+      if (!track) {
+        return { ok: false, message: "Failed to create track." };
+      }
     }
 
     // Trim to bar-accurate length: use sourceOffset 0 and clamp duration to
     // the requested seconds, never longer than Lyria's actual output.
     const actualSeconds = Math.min(targetSeconds, result.duration);
     const clipId = createId("clip");
+
+    // Persist to IndexedDB so the clip survives a page reload (M5 fix).
+    // The registry creates exactly one blob URL per clip for the current session.
+    await putBlob(clipId, result.blob);
+    const fileUrl = getOrCreateUrl(clipId, result.blob);
+
     const nextClip: Clip = {
       id: clipId,
       trackId: track.id,
-      fileUrl: result.audioUrl,
-      filePath: null,
+      fileUrl,
+      filePath: `${IDB_PREFIX}${clipId}`,
       sourceKind: "appAsset",
       startTime: barToSeconds(startBar, bpm),
       duration: actualSeconds,
