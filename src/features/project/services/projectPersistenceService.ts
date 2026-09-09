@@ -21,6 +21,12 @@ import {
   writeTextFile,
 } from "./tauriPersistenceService";
 import { useGroovyStore } from "../../../store/useGroovyStore";
+import {
+  audioBlobStore,
+  buildAudioKey,
+  isIdbUrl,
+  keyFromIdbUrl,
+} from "./audioBlobStore";
 
 interface RecordedAssetResult {
   fileUrl: string;
@@ -42,14 +48,27 @@ class ProjectPersistenceService {
     mimeType: string;
     preferredBaseName: string;
     projectDirectoryPath: string | null;
+    projectId?: string;
   }): Promise<RecordedAssetResult> {
     if (!isTauriRuntime()) {
-      return {
-        fileUrl: URL.createObjectURL(options.blob),
-        filePath: null,
-        mimeType: options.mimeType,
-        persisted: false,
-      };
+      const projectId = options.projectId ?? localProjectSnapshot.getActiveId();
+      const fileUrl = URL.createObjectURL(options.blob);
+      if (!projectId) {
+        return { fileUrl, filePath: null, mimeType: options.mimeType, persisted: false };
+      }
+      const blobId = createId("aud");
+      const key = buildAudioKey(projectId, blobId);
+      try {
+        await audioBlobStore.putBlob(key, options.blob, options.mimeType);
+        return {
+          fileUrl,
+          filePath: `idb://${key}`,
+          mimeType: options.mimeType,
+          persisted: true,
+        };
+      } catch {
+        return { fileUrl, filePath: null, mimeType: options.mimeType, persisted: false };
+      }
     }
 
     const bytes = new Uint8Array(await options.blob.arrayBuffer());
@@ -71,10 +90,7 @@ class ProjectPersistenceService {
       ? await buildProjectAudioPath(targetDirectoryPath, fileName)
       : await join(targetDirectoryPath, fileName);
 
-    await writeBinaryFile({
-      targetPath,
-      bytes,
-    });
+    await writeBinaryFile({ targetPath, bytes });
 
     return {
       fileUrl: await createRuntimeAssetUrl(targetPath),
@@ -82,6 +98,26 @@ class ProjectPersistenceService {
       mimeType: options.mimeType,
       persisted: true,
     };
+  }
+
+  async persistImportedAudio(options: {
+    blob: Blob;
+    mimeType: string;
+    projectId?: string;
+  }): Promise<{ fileUrl: string; filePath: string | null }> {
+    const projectId = options.projectId ?? localProjectSnapshot.getActiveId();
+    const fileUrl = URL.createObjectURL(options.blob);
+    if (!projectId || isTauriRuntime()) {
+      return { fileUrl, filePath: null };
+    }
+    const blobId = createId("aud");
+    const key = buildAudioKey(projectId, blobId);
+    try {
+      await audioBlobStore.putBlob(key, options.blob, options.mimeType);
+      return { fileUrl, filePath: `idb://${key}` };
+    } catch {
+      return { fileUrl, filePath: null };
+    }
   }
 
   async saveProjectBundle(projectDirectoryPath: string): Promise<SaveProjectBundleResult> {
@@ -283,15 +319,28 @@ export function buildDefaultRecordedTakeName(trackName: string): string {
 
 export const projectPersistenceService = new ProjectPersistenceService();
 
-/**
- * Browser localStorage snapshot for V2. Persists a slim subset of state
- * (project metadata, tracks, app-asset clips, cursor) so a reload restores
- * the last layout. Object URLs for imported files cannot survive a reload,
- * so those clips are skipped on save.
- */
-const LOCAL_SNAPSHOT_KEY = "groovy.v2.snapshot.v1";
+// ---------------------------------------------------------------------------
+// Browser multi-project registry.
+// LocalStorage keys:
+//   groovy.v2.projects          — ProjectListEntry[]
+//   groovy.v2.project.<id>      — LocalSnapshotShape (per project)
+//   groovy.v2.activeProjectId   — string
+// Audio blobs live in IndexedDB, keyed `<projectId>:<blobId>`.
+// ---------------------------------------------------------------------------
 
-interface LocalSnapshotShape {
+const PROJECTS_KEY = "groovy.v2.projects";
+const ACTIVE_KEY = "groovy.v2.activeProjectId";
+const PROJECT_KEY_PREFIX = "groovy.v2.project.";
+const LEGACY_SNAPSHOT_KEY = "groovy.v2.snapshot.v1";
+
+export interface ProjectListEntry {
+  id: string;
+  name: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface LocalSnapshotShape {
   project: ReturnType<typeof useGroovyStore.getState>["project"];
   tracks: ReturnType<typeof useGroovyStore.getState>["tracks"];
   clips: Record<string, Clip>;
@@ -302,46 +351,210 @@ interface LocalSnapshotShape {
   transport: { metronomeEnabled: boolean };
 }
 
+function hasWindow(): boolean {
+  return typeof window !== "undefined";
+}
+
+function readList(): ProjectListEntry[] {
+  if (!hasWindow()) return [];
+  try {
+    const raw = window.localStorage.getItem(PROJECTS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as ProjectListEntry[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeList(list: ProjectListEntry[]): void {
+  if (!hasWindow()) return;
+  window.localStorage.setItem(PROJECTS_KEY, JSON.stringify(list));
+}
+
+function writeSnapshot(id: string, snapshot: LocalSnapshotShape): void {
+  if (!hasWindow()) return;
+  window.localStorage.setItem(PROJECT_KEY_PREFIX + id, JSON.stringify(snapshot));
+}
+
+function readSnapshot(id: string): LocalSnapshotShape | null {
+  if (!hasWindow()) return null;
+  try {
+    const raw = window.localStorage.getItem(PROJECT_KEY_PREFIX + id);
+    if (!raw) return null;
+    return JSON.parse(raw) as LocalSnapshotShape;
+  } catch {
+    return null;
+  }
+}
+
+function migrateLegacySnapshot(): void {
+  if (!hasWindow()) return;
+  const existing = readList();
+  if (existing.length > 0) return;
+  const legacyRaw = window.localStorage.getItem(LEGACY_SNAPSHOT_KEY);
+  if (!legacyRaw) return;
+  try {
+    const legacy = JSON.parse(legacyRaw) as LocalSnapshotShape;
+    const id = createId("proj");
+    const now = Date.now();
+    const entry: ProjectListEntry = {
+      id,
+      name: legacy.project?.name ?? "Untitled",
+      createdAt: now,
+      updatedAt: now,
+    };
+    writeList([entry]);
+    writeSnapshot(id, legacy);
+    window.localStorage.setItem(ACTIVE_KEY, id);
+    window.localStorage.removeItem(LEGACY_SNAPSHOT_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+function snapshotFromStore(): LocalSnapshotShape {
+  const state = useGroovyStore.getState();
+  return {
+    project: state.project,
+    tracks: state.tracks,
+    clips: { ...state.clips },
+    takeGroups: state.takeGroups,
+    cursorPosition: state.cursorPosition,
+    selectedTrackId: state.selectedTrackId,
+    selectedClipId: state.selectedClipId,
+    transport: { metronomeEnabled: state.transport.metronomeEnabled },
+  };
+}
+
 export const localProjectSnapshot = {
-  save() {
-    if (typeof window === "undefined") return;
-    try {
-      const state = useGroovyStore.getState();
-      const persistableClips: Record<string, Clip> = {};
-      for (const [id, clip] of Object.entries(state.clips)) {
-        if (clip.sourceKind === "appAsset" || (clip.sourceKind === "file" && clip.filePath)) {
-          persistableClips[id] = clip;
-        }
+  init(): { activeId: string; snapshot: LocalSnapshotShape | null } {
+    migrateLegacySnapshot();
+    let list = readList();
+    let activeId = hasWindow() ? window.localStorage.getItem(ACTIVE_KEY) : null;
+
+    if (!activeId || !list.some((p) => p.id === activeId)) {
+      if (list.length === 0) {
+        const id = createId("proj");
+        const now = Date.now();
+        list = [{ id, name: "Untitled", createdAt: now, updatedAt: now }];
+        writeList(list);
       }
-      const snapshot: LocalSnapshotShape = {
-        project: state.project,
-        tracks: state.tracks,
-        clips: persistableClips,
-        takeGroups: state.takeGroups,
-        cursorPosition: state.cursorPosition,
-        selectedTrackId: state.selectedTrackId,
-        selectedClipId: state.selectedClipId,
-        transport: { metronomeEnabled: state.transport.metronomeEnabled },
-      };
-      window.localStorage.setItem(LOCAL_SNAPSHOT_KEY, JSON.stringify(snapshot));
+      activeId = list[0].id;
+      if (hasWindow()) window.localStorage.setItem(ACTIVE_KEY, activeId);
+    }
+
+    return { activeId, snapshot: readSnapshot(activeId) };
+  },
+
+  getActiveId(): string | null {
+    if (!hasWindow()) return null;
+    return window.localStorage.getItem(ACTIVE_KEY);
+  },
+
+  setActiveId(id: string): void {
+    if (!hasWindow()) return;
+    window.localStorage.setItem(ACTIVE_KEY, id);
+  },
+
+  listProjects(): ProjectListEntry[] {
+    return readList().sort((a, b) => b.updatedAt - a.updatedAt);
+  },
+
+  createProject(name: string): ProjectListEntry {
+    const id = createId("proj");
+    const now = Date.now();
+    const entry: ProjectListEntry = {
+      id,
+      name: name.trim() || "Untitled",
+      createdAt: now,
+      updatedAt: now,
+    };
+    const list = [...readList(), entry];
+    writeList(list);
+    return entry;
+  },
+
+  renameProject(id: string, name: string): void {
+    const list = readList().map((p) =>
+      p.id === id ? { ...p, name: name.trim() || p.name, updatedAt: Date.now() } : p,
+    );
+    writeList(list);
+  },
+
+  async deleteProject(id: string): Promise<void> {
+    const list = readList().filter((p) => p.id !== id);
+    writeList(list);
+    if (hasWindow()) {
+      window.localStorage.removeItem(PROJECT_KEY_PREFIX + id);
+      if (window.localStorage.getItem(ACTIVE_KEY) === id) {
+        const nextId = list[0]?.id ?? null;
+        if (nextId) window.localStorage.setItem(ACTIVE_KEY, nextId);
+        else window.localStorage.removeItem(ACTIVE_KEY);
+      }
+    }
+    try {
+      await audioBlobStore.deleteByProject(id);
     } catch {
       // ignore
     }
   },
 
-  load(): LocalSnapshotShape | null {
-    if (typeof window === "undefined") return null;
+  loadSnapshot(id: string): LocalSnapshotShape | null {
+    return readSnapshot(id);
+  },
+
+  saveActive(): void {
+    if (!hasWindow()) return;
+    const activeId = window.localStorage.getItem(ACTIVE_KEY);
+    if (!activeId) return;
     try {
-      const raw = window.localStorage.getItem(LOCAL_SNAPSHOT_KEY);
-      if (!raw) return null;
-      return JSON.parse(raw) as LocalSnapshotShape;
+      const snapshot = snapshotFromStore();
+      writeSnapshot(activeId, snapshot);
+      const list = readList().map((p) =>
+        p.id === activeId
+          ? { ...p, name: snapshot.project?.name ?? p.name, updatedAt: Date.now() }
+          : p,
+      );
+      writeList(list);
     } catch {
-      return null;
+      // ignore
     }
   },
 
-  clear() {
-    if (typeof window === "undefined") return;
-    window.localStorage.removeItem(LOCAL_SNAPSHOT_KEY);
+  clearActive(): void {
+    if (!hasWindow()) return;
+    const activeId = window.localStorage.getItem(ACTIVE_KEY);
+    if (activeId) window.localStorage.removeItem(PROJECT_KEY_PREFIX + activeId);
   },
 };
+
+// Rehydrates `idb://` clip references into usable object URLs. Returns the
+// refreshed clips map plus the list of object URLs created so callers can
+// revoke them on teardown.
+export async function rehydrateSnapshotClips(
+  clips: Record<string, Clip>,
+): Promise<{ clips: Record<string, Clip>; createdUrls: string[] }> {
+  const next: Record<string, Clip> = {};
+  const createdUrls: string[] = [];
+  for (const [id, clip] of Object.entries(clips)) {
+    if (isIdbUrl(clip.filePath ?? undefined)) {
+      const key = keyFromIdbUrl(clip.filePath as string);
+      try {
+        const blob = await audioBlobStore.getBlob(key);
+        if (blob) {
+          const url = URL.createObjectURL(blob);
+          createdUrls.push(url);
+          next[id] = { ...clip, fileUrl: url };
+          continue;
+        }
+      } catch {
+        // fall through to missing
+      }
+      next[id] = { ...clip, fileUrl: "" };
+    } else {
+      next[id] = clip;
+    }
+  }
+  return { clips: next, createdUrls };
+}

@@ -24,6 +24,8 @@ export function TransportPill({ theme, onLampClick, genieActive }: Props) {
   const metronomeEnabled = useGroovyStore((s) => s.transport.metronomeEnabled);
   const cursorPosition = useGroovyStore((s) => s.cursorPosition);
   const isRecording = useGroovyStore((s) => s.recording.isRecording);
+  const countInEnabled = useGroovyStore((s) => s.recording.countInEnabled);
+  const setCountInEnabled = useGroovyStore((s) => s.setCountInEnabled);
   const mixerOpen = useUiStore((s) => s.tweaks.mixer);
 
   const playing = transportStatus === 'playing';
@@ -93,6 +95,26 @@ export function TransportPill({ theme, onLampClick, genieActive }: Props) {
       <PillBtnBig on={metronomeEnabled} onClick={handleMetronome} theme={theme}>
         <Icon.Metronome c={metronomeEnabled ? theme.accent : theme.pillTextStrong}/>
       </PillBtnBig>
+
+      <button
+        onClick={() => setCountInEnabled(!countInEnabled)}
+        title="Count-in bar before recording"
+        aria-pressed={countInEnabled}
+        style={{
+          padding: '0 14px',
+          background: countInEnabled ? theme.metroOn : 'transparent',
+          border: 'none',
+          borderRight: `1px solid ${theme.pillDivider}`,
+          cursor: 'pointer',
+          fontFamily: 'var(--mono)',
+          fontSize: 10,
+          letterSpacing: '0.08em',
+          textTransform: 'uppercase',
+          color: countInEnabled ? theme.accent : theme.pillTextStrong,
+        }}
+      >
+        1·2·3·4
+      </button>
 
       <button onClick={onLampClick} title="Jam with the Agent" style={{
         padding: '0 18px',

@@ -4,10 +4,13 @@ import type { AgentMessage } from '../types/agent';
 import { Icon } from './icons';
 import { Waveform } from './waveform';
 import { useGroovyStore } from '../store/useGroovyStore';
+import { useUiStore } from '../store/useUiStore';
 import { agentController } from '../controllers/agentController';
 import { AgentActivity } from './genie/AgentActivity';
 import { AgentUndoFooter } from './genie/AgentUndoFooter';
 import { demoPrompts } from '../features/agent/demoPrompts';
+import { useVoiceCapture } from '../features/voice/hooks/useVoiceCapture';
+import { getActiveTranscriptionService } from '../features/voice/services/voiceTranscriptionService';
 
 interface Props {
   open: boolean;
@@ -22,6 +25,7 @@ export function GeniePanel({ open, onClose, theme }: Props) {
   const activity = useGroovyStore((s) => s.agentActivity);
 
   const [input, setInput] = useState('');
+  const [isTranscribing, setIsTranscribing] = useState(false);
   const scrollerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (scrollerRef.current) scrollerRef.current.scrollTop = scrollerRef.current.scrollHeight;
@@ -35,6 +39,36 @@ export function GeniePanel({ open, onClose, theme }: Props) {
   const submit = () => {
     send(input);
     setInput('');
+  };
+
+  const showToast = useUiStore((s) => s.showToast);
+  const voice = useVoiceCapture({
+    onComplete: async ({ blob, mimeType }) => {
+      const service = getActiveTranscriptionService();
+      if (!service.isAvailable()) {
+        showToast('Voice transcription needs VITE_GEMINI_API_KEY.', 'warn');
+        return;
+      }
+      setIsTranscribing(true);
+      try {
+        const { text } = await service.transcribe(blob, mimeType);
+        if (!text) {
+          showToast('Didn\u2019t catch that \u2014 try again.', 'warn');
+          return;
+        }
+        setInput((prev) => (prev.trim() ? `${prev.trim()} ${text}` : text));
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : 'Transcription failed.', 'error');
+      } finally {
+        setIsTranscribing(false);
+      }
+    },
+    onError: (error) => showToast(error.message, 'error'),
+  });
+
+  const toggleMic = () => {
+    if (voice.isRecording) voice.stop();
+    else void voice.start();
   };
 
   return (
@@ -131,7 +165,7 @@ export function GeniePanel({ open, onClose, theme }: Props) {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } }}
-            placeholder="what should we jam on next?"
+            placeholder={voice.isRecording ? 'listening\u2026' : isTranscribing ? 'transcribing\u2026' : 'what should we jam on next?'}
             rows={1}
             style={{
               flex: 1, resize: 'none', border: 'none', outline: 'none', background: 'transparent',
@@ -140,6 +174,24 @@ export function GeniePanel({ open, onClose, theme }: Props) {
             }}
           />
         </div>
+        <button
+          onClick={toggleMic}
+          disabled={isTranscribing || isLoading}
+          title={voice.isRecording ? 'Stop and transcribe' : 'Speak to the agent'}
+          aria-pressed={voice.isRecording}
+          style={{
+            width: 32, height: 32, borderRadius: '50%',
+            background: voice.isRecording ? '#B3261E' : 'transparent',
+            border: `1px solid ${voice.isRecording ? '#B3261E' : theme.pillDivider}`,
+            cursor: isTranscribing || isLoading ? 'not-allowed' : 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            transition: 'background 160ms',
+            animation: voice.isRecording ? 'recordPulse 1.2s ease-in-out infinite' : 'none',
+            opacity: isTranscribing || isLoading ? 0.5 : 1,
+          }}
+        >
+          <Icon.Mic s={14} c={voice.isRecording ? '#fff' : theme.geniePanelText}/>
+        </button>
         <button onClick={submit} disabled={!input.trim() || isLoading} style={{
           width: 32, height: 32, borderRadius: '50%',
           background: input.trim() && !isLoading ? '#2340E8' : 'rgba(35,64,232,0.2)',

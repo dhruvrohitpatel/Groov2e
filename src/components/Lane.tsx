@@ -182,18 +182,15 @@ function EditorBridge({ appSelectedTrackId }: { appSelectedTrackId: string | nul
 // and internally owns them afterwards, so the store has to talk to wfpl
 // imperatively or knob turns are silent.
 //
-// Two paths:
-//  - Delta path (normal user toggles a single field): use wfpl's React
-//    setters, which update both the engine and wfpl's `trackStates`.
-//  - Forced resync (engine rebuild after track add/remove, or isReady
-//    flipping true): write straight to the engine via `playoutRef` to
-//    avoid wfpl's useCallback closure bug, where multiple setters fired
-//    in one tick all start from the same pre-update `trackStates` snapshot
-//    and the last `setTrackStates` call clobbers everything before it.
-//    The engine is the source of truth for playback, so direct writes
-//    reliably apply mute/solo/volume/pan after a rebuild.
+// We always write straight to the engine via `playoutRef`. wfpl's React
+// setters have a useCallback closure bug where multiple setters fired in
+// one tick all start from the same pre-update `trackStates` snapshot and
+// the last `setTrackStates` call clobbers the others — that desyncs wfpl's
+// mirror from reality and, in particular, breaks mute when it fires
+// alongside a volume or solo change. The engine is the source of truth for
+// playback, and on rebuild wfpl re-reads `track.muted` from the adapter
+// (Groovy's store), so skipping wfpl's setters is safe.
 function TrackStateSync({ trackIds }: { trackIds: string[] }) {
-  const { setTrackVolume, setTrackPan, setTrackMute, setTrackSolo } = usePlaylistControls();
   const { playoutRef, isReady } = usePlaylistData();
   const tracks = useGroovyStore((state) => state.tracks);
   const lastAppliedRef = useRef<Map<string, { volume: number; pan: number; muted: boolean; solo: boolean }>>(
@@ -230,10 +227,10 @@ function TrackStateSync({ trackIds }: { trackIds: string[] }) {
     }
 
     const engine = playoutRef.current;
+    if (!engine) return;
 
     tracks.forEach((track) => {
-      const trackIndex = trackIds.indexOf(track.id);
-      if (trackIndex === -1) return;
+      if (!trackIds.includes(track.id)) return;
 
       const fader = track.volume ?? 0.8;
       const gainDb = track.gain ?? 0;
@@ -244,24 +241,17 @@ function TrackStateSync({ trackIds }: { trackIds: string[] }) {
 
       const previous = lastAppliedRef.current.get(track.id);
 
-      if (forceFullSync && engine) {
+      if (forceFullSync || !previous || previous.volume !== nextVolume) {
         engine.setTrackVolume(track.id, nextVolume);
+      }
+      if (forceFullSync || !previous || previous.pan !== nextPan) {
         engine.setTrackPan(track.id, nextPan);
+      }
+      if (forceFullSync || !previous || previous.muted !== nextMuted) {
         engine.setTrackMute(track.id, nextMuted);
+      }
+      if (forceFullSync || !previous || previous.solo !== nextSolo) {
         engine.setTrackSolo(track.id, nextSolo);
-      } else {
-        if (!previous || previous.volume !== nextVolume) {
-          setTrackVolume(trackIndex, nextVolume);
-        }
-        if (!previous || previous.pan !== nextPan) {
-          setTrackPan(trackIndex, nextPan);
-        }
-        if (!previous || previous.muted !== nextMuted) {
-          setTrackMute(trackIndex, nextMuted);
-        }
-        if (!previous || previous.solo !== nextSolo) {
-          setTrackSolo(trackIndex, nextSolo);
-        }
       }
 
       lastAppliedRef.current.set(track.id, {
@@ -271,7 +261,7 @@ function TrackStateSync({ trackIds }: { trackIds: string[] }) {
         solo: nextSolo,
       });
     });
-  }, [tracks, trackIds, isReady, playoutRef, setTrackVolume, setTrackPan, setTrackMute, setTrackSolo]);
+  }, [tracks, trackIds, isReady, playoutRef]);
 
   return null;
 }

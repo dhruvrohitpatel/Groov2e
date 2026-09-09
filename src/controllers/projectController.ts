@@ -2,12 +2,18 @@ import { getGlobalAudioContext } from "@waveform-playlist/playout";
 import { audioService } from "../features/audio/services/audioService";
 import { metronomeService } from "../features/audio/services/metronomeService";
 import { createInitialGroovyState } from "../lib/mockProject";
-import { projectPersistenceService } from "../features/project/services/projectPersistenceService";
+import {
+  projectPersistenceService,
+  localProjectSnapshot,
+  rehydrateSnapshotClips,
+} from "../features/project/services/projectPersistenceService";
 import {
   chooseProjectDirectoryForOpen,
   chooseProjectDirectoryForSave,
+  isTauriRuntime,
 } from "../features/project/services/tauriPersistenceService";
 import { useGroovyStore } from "../store/useGroovyStore";
+import { useUiStore } from "../store/useUiStore";
 
 function stopTransportForProjectChange() {
   metronomeService.stop();
@@ -42,59 +48,91 @@ function applyProjectResetState() {
   });
 }
 
+async function switchActiveProject(projectId: string) {
+  stopTransportForProjectChange();
+  localProjectSnapshot.setActiveId(projectId);
+  const snapshot = localProjectSnapshot.loadSnapshot(projectId);
+  const currentState = useGroovyStore.getState();
+
+  if (!snapshot) {
+    applyProjectResetState();
+    return;
+  }
+
+  const { clips } = await rehydrateSnapshotClips(snapshot.clips);
+  const fresh = createInitialGroovyState();
+  currentState.replaceProjectState({
+    project: snapshot.project ?? fresh.project,
+    transport: {
+      ...fresh.transport,
+      metronomeEnabled: snapshot.transport?.metronomeEnabled ?? fresh.transport.metronomeEnabled,
+    },
+    tracks: snapshot.tracks ?? fresh.tracks,
+    clips,
+    takeGroups: snapshot.takeGroups ?? fresh.takeGroups,
+    selectedTrackId: snapshot.selectedTrackId ?? null,
+    selectedClipId: snapshot.selectedClipId ?? null,
+    cursorPosition: snapshot.cursorPosition ?? 0,
+    timeline: fresh.timeline,
+    projectFile: fresh.projectFile,
+  });
+}
+
 export const projectController = {
   async newProject() {
-    stopTransportForProjectChange();
-    applyProjectResetState();
+    if (isTauriRuntime()) {
+      stopTransportForProjectChange();
+      applyProjectResetState();
+      return;
+    }
+    useUiStore.getState().setProjectsDialogOpen(true);
   },
 
   async openProject() {
-    const state = useGroovyStore.getState();
-
-    try {
-      const selectedDirectory = await chooseProjectDirectoryForOpen();
-      if (!selectedDirectory) {
-        return;
+    if (isTauriRuntime()) {
+      const state = useGroovyStore.getState();
+      try {
+        const selectedDirectory = await chooseProjectDirectoryForOpen();
+        if (!selectedDirectory) return;
+        stopTransportForProjectChange();
+        const openedProject = await projectPersistenceService.openProjectBundle(selectedDirectory);
+        state.replaceProjectState(openedProject);
+        state.setProjectFileState({ lastError: null });
+      } catch (error) {
+        state.setProjectFileState({
+          lastError: error instanceof Error ? error.message : "Project could not be opened.",
+        });
       }
-
-      stopTransportForProjectChange();
-      const openedProject = await projectPersistenceService.openProjectBundle(selectedDirectory);
-      state.replaceProjectState(openedProject);
-      state.setProjectFileState({
-        lastError: null,
-      });
-    } catch (error) {
-      state.setProjectFileState({
-        lastError: error instanceof Error ? error.message : "Project could not be opened.",
-      });
+      return;
     }
+    useUiStore.getState().setProjectsDialogOpen(true);
   },
 
   async saveProject() {
-    const state = useGroovyStore.getState();
-    const existingDirectory = state.projectFile.projectDirectoryPath;
-
-    if (!existingDirectory) {
-      await this.saveProjectAs();
+    if (isTauriRuntime()) {
+      const state = useGroovyStore.getState();
+      const existingDirectory = state.projectFile.projectDirectoryPath;
+      if (!existingDirectory) {
+        await this.saveProjectAs();
+        return;
+      }
+      try {
+        const result = await projectPersistenceService.saveProjectBundle(existingDirectory);
+        useGroovyStore.setState({ clips: result.runtimeClips });
+        state.setProjectFileState({
+          projectDirectoryPath: result.persistence.projectDirectoryPath,
+          projectFilePath: result.persistence.projectFilePath,
+          lastSavedAt: result.persistence.savedAt,
+          lastError: null,
+        });
+      } catch (error) {
+        state.setProjectFileState({
+          lastError: error instanceof Error ? error.message : "Project could not be saved.",
+        });
+      }
       return;
     }
-
-    try {
-      const result = await projectPersistenceService.saveProjectBundle(existingDirectory);
-      useGroovyStore.setState({
-        clips: result.runtimeClips,
-      });
-      state.setProjectFileState({
-        projectDirectoryPath: result.persistence.projectDirectoryPath,
-        projectFilePath: result.persistence.projectFilePath,
-        lastSavedAt: result.persistence.savedAt,
-        lastError: null,
-      });
-    } catch (error) {
-      state.setProjectFileState({
-        lastError: error instanceof Error ? error.message : "Project could not be saved.",
-      });
-    }
+    localProjectSnapshot.saveActive();
   },
 
   async importFiles(files: FileList | File[], options?: { trackId?: string | null }) {
@@ -108,10 +146,13 @@ export const projectController = {
       try {
         const arrayBuffer = await file.arrayBuffer();
         const decoded = await ctx.decodeAudioData(arrayBuffer.slice(0));
-        const fileUrl = URL.createObjectURL(file);
+        const persisted = await projectPersistenceService.persistImportedAudio({
+          blob: file,
+          mimeType: file.type || "audio/wav",
+        });
         state.importAudioAsset({
-          fileUrl,
-          filePath: null,
+          fileUrl: persisted.fileUrl,
+          filePath: persisted.filePath,
           name: file.name,
           duration: decoded.duration,
           trackId: options?.trackId ?? null,
@@ -125,28 +166,63 @@ export const projectController = {
   },
 
   async saveProjectAs() {
-    const state = useGroovyStore.getState();
-
-    try {
-      const selectedDirectory = await chooseProjectDirectoryForSave(state.project.name);
-      if (!selectedDirectory) {
-        return;
+    if (isTauriRuntime()) {
+      const state = useGroovyStore.getState();
+      try {
+        const selectedDirectory = await chooseProjectDirectoryForSave(state.project.name);
+        if (!selectedDirectory) return;
+        const result = await projectPersistenceService.saveProjectBundle(selectedDirectory);
+        useGroovyStore.setState({ clips: result.runtimeClips });
+        state.setProjectFileState({
+          projectDirectoryPath: result.persistence.projectDirectoryPath,
+          projectFilePath: result.persistence.projectFilePath,
+          lastSavedAt: result.persistence.savedAt,
+          lastError: null,
+        });
+      } catch (error) {
+        state.setProjectFileState({
+          lastError: error instanceof Error ? error.message : "Project could not be saved.",
+        });
       }
+      return;
+    }
+    useUiStore.getState().setProjectsDialogOpen(true);
+  },
 
-      const result = await projectPersistenceService.saveProjectBundle(selectedDirectory);
-      useGroovyStore.setState({
-        clips: result.runtimeClips,
-      });
-      state.setProjectFileState({
-        projectDirectoryPath: result.persistence.projectDirectoryPath,
-        projectFilePath: result.persistence.projectFilePath,
-        lastSavedAt: result.persistence.savedAt,
-        lastError: null,
-      });
-    } catch (error) {
-      state.setProjectFileState({
-        lastError: error instanceof Error ? error.message : "Project could not be saved.",
-      });
+  createBrowserProject(name: string) {
+    localProjectSnapshot.saveActive();
+    const entry = localProjectSnapshot.createProject(name);
+    stopTransportForProjectChange();
+    localProjectSnapshot.setActiveId(entry.id);
+    applyProjectResetState();
+    useGroovyStore.getState().setProjectName(entry.name);
+    localProjectSnapshot.saveActive();
+    return entry;
+  },
+
+  async switchToBrowserProject(projectId: string) {
+    localProjectSnapshot.saveActive();
+    await switchActiveProject(projectId);
+  },
+
+  renameBrowserProject(projectId: string, name: string) {
+    localProjectSnapshot.renameProject(projectId, name);
+    if (localProjectSnapshot.getActiveId() === projectId) {
+      useGroovyStore.getState().setProjectName(name);
+      localProjectSnapshot.saveActive();
+    }
+  },
+
+  async deleteBrowserProject(projectId: string) {
+    const wasActive = localProjectSnapshot.getActiveId() === projectId;
+    await localProjectSnapshot.deleteProject(projectId);
+    if (wasActive) {
+      const nextId = localProjectSnapshot.getActiveId();
+      if (nextId) {
+        await switchActiveProject(nextId);
+      } else {
+        this.createBrowserProject("Untitled");
+      }
     }
   },
 };

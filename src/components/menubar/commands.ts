@@ -123,7 +123,7 @@ export function buildMenuGroups(): MenuGroup[] {
             shortcut: SC.save,
             run: () => {
               void projectController.saveProject();
-              localProjectSnapshot.save();
+              localProjectSnapshot.saveActive();
               toast('Project saved', 'info');
             },
           },
@@ -310,6 +310,17 @@ export function buildMenuGroups(): MenuGroup[] {
             id: 'track.freeze',
             label: 'Freeze Track',
             run: comingSoon('Freeze Track'),
+          },
+        ],
+        [
+          {
+            id: 'transport.toggleCountIn',
+            label: 'Count-in Before Recording',
+            run: () => {
+              const s = useGroovyStore.getState();
+              s.setCountInEnabled(!s.recording.countInEnabled);
+            },
+            isChecked: () => useGroovyStore.getState().recording.countInEnabled,
           },
         ],
       ],

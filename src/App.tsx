@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import type { Theme } from './types';
 import { useGroovyStore } from './store/useGroovyStore';
 import { useUiStore } from './store/useUiStore';
@@ -19,7 +19,11 @@ import { MixerDrawer } from './components/mixer/MixerDrawer';
 import { trackController } from './controllers/trackController';
 import { projectController } from './controllers/projectController';
 import { transportController } from './controllers/transportController';
-import { localProjectSnapshot } from './features/project/services/projectPersistenceService';
+import {
+  localProjectSnapshot,
+  rehydrateSnapshotClips,
+} from './features/project/services/projectPersistenceService';
+import { ProjectsDialog } from './components/projects/ProjectsDialog';
 
 export function App() {
   const project = useGroovyStore((s) => s.project);
@@ -48,31 +52,42 @@ export function App() {
     document.documentElement.setAttribute('data-theme', tweaks.theme);
   }, [tweaks.density, tweaks.theme]);
 
-  useEffect(() => {
-    const snapshot = localProjectSnapshot.load();
-    if (!snapshot) return;
+  const createdUrlsRef = useRef<string[]>([]);
 
-    useGroovyStore.setState((state) => ({
-      project: snapshot.project ?? state.project,
-      tracks: snapshot.tracks ?? state.tracks,
-      clips: snapshot.clips ?? state.clips,
-      takeGroups: snapshot.takeGroups ?? state.takeGroups,
-      cursorPosition: snapshot.cursorPosition ?? state.cursorPosition,
-      selectedTrackId: snapshot.selectedTrackId ?? state.selectedTrackId,
-      selectedClipId: snapshot.selectedClipId ?? state.selectedClipId,
-      transport: {
-        ...state.transport,
-        metronomeEnabled: snapshot.transport?.metronomeEnabled ?? state.transport.metronomeEnabled,
-        currentTime: snapshot.cursorPosition ?? state.transport.currentTime,
-      },
-    }));
+  useEffect(() => {
+    void (async () => {
+      const { snapshot } = localProjectSnapshot.init();
+      if (!snapshot) return;
+      const { clips, createdUrls } = await rehydrateSnapshotClips(snapshot.clips);
+      createdUrlsRef.current.push(...createdUrls);
+      useGroovyStore.setState((state) => ({
+        project: snapshot.project ?? state.project,
+        tracks: snapshot.tracks ?? state.tracks,
+        clips,
+        takeGroups: snapshot.takeGroups ?? state.takeGroups,
+        cursorPosition: snapshot.cursorPosition ?? state.cursorPosition,
+        selectedTrackId: snapshot.selectedTrackId ?? state.selectedTrackId,
+        selectedClipId: snapshot.selectedClipId ?? state.selectedClipId,
+        transport: {
+          ...state.transport,
+          metronomeEnabled: snapshot.transport?.metronomeEnabled ?? state.transport.metronomeEnabled,
+          currentTime: snapshot.cursorPosition ?? state.transport.currentTime,
+        },
+      }));
+    })();
+    return () => {
+      for (const url of createdUrlsRef.current) {
+        try { URL.revokeObjectURL(url); } catch { /* ignore */ }
+      }
+      createdUrlsRef.current = [];
+    };
   }, []);
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     const unsub = useGroovyStore.subscribe(() => {
       if (timer) clearTimeout(timer);
-      timer = setTimeout(() => localProjectSnapshot.save(), 1500);
+      timer = setTimeout(() => localProjectSnapshot.saveActive(), 1500);
     });
     return () => {
       if (timer) clearTimeout(timer);
@@ -255,6 +270,7 @@ export function App() {
 
       <Toasts theme={theme}/>
       <HelpModals theme={theme}/>
+      <ProjectsDialog theme={theme}/>
     </div>
   );
 }

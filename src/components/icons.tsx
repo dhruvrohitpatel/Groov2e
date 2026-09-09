@@ -40,6 +40,14 @@ export const Icon = {
   Send: ({ s = 14, c = 'currentColor' }: IP) => (
     <svg width={s} height={s} viewBox="0 0 14 14" fill="none"><path d="M2 7L12 2L8 12L7 8L2 7Z" fill={c}/></svg>
   ),
+  Mic: ({ s = 14, c = 'currentColor' }: IP) => (
+    <svg width={s} height={s} viewBox="0 0 14 14" fill="none" stroke={c} strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="5" y="1.5" width="4" height="7" rx="2" fill={c} stroke="none"/>
+      <path d="M3 7 C3 9.5 5 11 7 11 C9 11 11 9.5 11 7"/>
+      <line x1="7" y1="11" x2="7" y2="13"/>
+      <line x1="5" y1="13" x2="9" y2="13"/>
+    </svg>
+  ),
   Lamp: ({ s = 22, c = 'currentColor', glow = false }: IP) => (
     <svg width={s} height={s} viewBox="0 0 32 24" fill="none">
       {glow && <ellipse cx="16" cy="20" rx="13" ry="1.5" fill="#2340E8" opacity="0.2"/>}

@@ -131,5 +131,50 @@ export function hasAgentKey(): boolean {
   return Boolean(API_KEY);
 }
 
+// Transcribe an audio blob using the same Gemini client/key as chat.
+// Audio is sent over TLS as base64 inline data. We don't retain it locally and
+// don't persist a server-side copy; the provider's retention policy applies.
+const TRANSCRIBE_MODEL =
+  (import.meta.env.VITE_GEMINI_TRANSCRIBE_MODEL as string | undefined) ?? "gemini-2.5-flash";
+
+async function blobToBase64(blob: Blob): Promise<string> {
+  const buf = await blob.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let binary = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    const slice = bytes.subarray(i, i + CHUNK);
+    binary += String.fromCharCode.apply(null, Array.from(slice));
+  }
+  return btoa(binary);
+}
+
+export async function transcribeAudio(
+  blob: Blob,
+  mimeType: string,
+): Promise<{ text: string }> {
+  const ai = getClient();
+  const data = await blobToBase64(blob);
+  const response = await ai.models.generateContent({
+    model: TRANSCRIBE_MODEL,
+    contents: [
+      {
+        role: "user",
+        parts: [
+          {
+            text:
+              "Transcribe the attached audio. Return ONLY the verbatim spoken words as plain text, with no preamble or explanation. If the audio is silent, return an empty string.",
+          },
+          { inlineData: { mimeType, data } },
+        ],
+      },
+    ],
+    config: {
+      temperature: 0,
+    },
+  });
+  return { text: (response.text ?? "").trim() };
+}
+
 // Re-export for tests / power users.
 export { newChat };

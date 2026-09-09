@@ -32,6 +32,7 @@ interface UiState {
   toasts: Toast[];
   shortcutsModalOpen: boolean;
   aboutModalOpen: boolean;
+  projectsDialogOpen: boolean;
   setTweak: <K extends keyof Tweaks>(key: K, value: Tweaks[K]) => void;
   setTweaksOpen: (open: boolean) => void;
   setGenieOpen: (open: boolean) => void;
@@ -44,6 +45,7 @@ interface UiState {
   dismissToast: (id: string) => void;
   setShortcutsModalOpen: (open: boolean) => void;
   setAboutModalOpen: (open: boolean) => void;
+  setProjectsDialogOpen: (open: boolean) => void;
 }
 
 function loadTweaks(): Tweaks {
@@ -74,6 +76,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   toasts: [],
   shortcutsModalOpen: false,
   aboutModalOpen: false,
+  projectsDialogOpen: false,
   setTweak: (key, value) =>
     set((state) => ({ tweaks: { ...state.tweaks, [key]: value } })),
   setTweaksOpen: (tweaksOpen) => set({ tweaksOpen }),
@@ -106,6 +109,7 @@ export const useUiStore = create<UiState>((set, get) => ({
     set((state) => ({ toasts: state.toasts.filter((toast) => toast.id !== id) })),
   setShortcutsModalOpen: (shortcutsModalOpen) => set({ shortcutsModalOpen }),
   setAboutModalOpen: (aboutModalOpen) => set({ aboutModalOpen }),
+  setProjectsDialogOpen: (projectsDialogOpen) => set({ projectsDialogOpen }),
 }));
 
 if (typeof window !== 'undefined') {
