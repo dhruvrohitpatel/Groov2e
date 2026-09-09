@@ -1,33 +1,42 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Track } from '../types/models';
 import type { Theme } from '../types';
-import { INPUT_SOURCES, OUTPUT_SOURCES } from '../lib/constants';
+import { OUTPUT_SOURCES } from '../lib/constants';
 import { Icon } from './icons';
 import { Knob, MiniFader, PanSlider, fmtDb, fmtGain, fmtPan } from './controls';
 import { trackController } from '../controllers/trackController';
 import { trackMeterRegistry } from '../features/timeline/lib/trackMeters';
 import { useMeterLevels } from './mixer/useMeterLevels';
+import { useGroovyStore } from '../store/useGroovyStore';
+import { useUiStore } from '../store/useUiStore';
+import {
+  listAudioDevices,
+  refreshInputDevices,
+} from '../features/devices/services/deviceService';
 
 const TRACK_COLOR_FALLBACK = '#C89A4B';
 
-function IOPill({ label, value, options, onChange, theme, active }: {
+function IOPill({ label, value, options, onChange, onOpen, theme, active, footer }: {
   label: string;
   value: string;
   options: string[];
   onChange: (v: string) => void;
+  onOpen?: () => void;
   theme: Theme;
   active?: boolean;
+  footer?: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
+    onOpen?.();
     const close = (e: MouseEvent) => {
       if (!ref.current?.contains(e.target as Node)) setOpen(false);
     };
     const t = setTimeout(() => window.addEventListener('click', close), 0);
     return () => { clearTimeout(t); window.removeEventListener('click', close); };
-  }, [open]);
+  }, [open, onOpen]);
   const short = value.replace(/Scarlett 2i2 · /, '2i2·').replace(/Audient EVO 4 · /, 'EVO·');
   return (
     <div ref={ref} style={{ position: 'relative', flex: 1, minWidth: 0 }}>
@@ -58,6 +67,13 @@ function IOPill({ label, value, options, onChange, theme, active }: {
               cursor: 'pointer', whiteSpace: 'nowrap',
             }}>{o}</div>
           ))}
+          {footer ? (
+            <div style={{
+              borderTop: `1px solid ${theme.pillDivider}`, marginTop: 4, paddingTop: 4,
+            }}>
+              {footer}
+            </div>
+          ) : null}
         </div>
       )}
     </div>
@@ -129,12 +145,62 @@ interface Props {
   height?: number;
 }
 
+const NO_INPUT_LABEL = 'No input';
+
 export function TrackHead({ track, theme, selected, height }: Props) {
   const color = track.color ?? TRACK_COLOR_FALLBACK;
   const vol = track.vol ?? track.volume ?? 0.8;
   const gain = track.gain ?? 0;
-  const input = track.input ?? 'No input';
   const output = track.output ?? 'Master';
+
+  const inputs = useGroovyStore((s) => s.devices.inputs);
+  const selectedInputId = useGroovyStore((s) => s.devices.selectedInputId);
+  const setAvailableDevices = useGroovyStore((s) => s.setAvailableDevices);
+  const setSelectedInput = useGroovyStore((s) => s.setSelectedInput);
+
+  const selectedInputLabel = useMemo(() => {
+    if (!selectedInputId) return NO_INPUT_LABEL;
+    const match = inputs.find((device) => device.id === selectedInputId);
+    return match?.label ?? NO_INPUT_LABEL;
+  }, [inputs, selectedInputId]);
+
+  const inputOptions = useMemo(() => {
+    const deviceLabels = inputs.map((device) => device.label);
+    return [NO_INPUT_LABEL, ...deviceLabels];
+  }, [inputs]);
+
+  const onInputPillOpen = useCallback(() => {
+    // Trigger mic permission + full device list on first open. This is the
+    // only reliable way to get real device labels (e.g. "HX Stomp") in most
+    // browsers — enumerateDevices returns blank labels without permission.
+    const needsPermission = inputs.length === 0 || inputs.some((d) => !d.label || d.label.startsWith('Input '));
+    const refresh = needsPermission
+      ? refreshInputDevices()
+      : listAudioDevices();
+    void refresh.then((next) => {
+      setAvailableDevices({
+        inputs: next.inputs,
+        outputs: next.outputs,
+        outputSelectionSupported: next.outputSelectionSupported,
+        error: next.error,
+      });
+      if (next.error) {
+        useUiStore.getState().showToast(next.error, 'warn');
+      }
+    });
+  }, [inputs, setAvailableDevices]);
+
+  const onInputChange = useCallback((label: string) => {
+    if (label === NO_INPUT_LABEL) {
+      setSelectedInput(null);
+      trackController.updateTrack(track.id, { input: NO_INPUT_LABEL });
+      return;
+    }
+    const device = inputs.find((d) => d.label === label);
+    if (!device) return;
+    setSelectedInput(device.id);
+    trackController.updateTrack(track.id, { input: label });
+  }, [inputs, setSelectedInput, track.id]);
 
   return (
     <div onClick={(e) => { e.stopPropagation(); trackController.selectTrack(track.id); }} style={{
@@ -170,7 +236,38 @@ export function TrackHead({ track, theme, selected, height }: Props) {
       </div>
 
       <div onClick={(e) => e.stopPropagation()} style={{ display: 'flex', gap: 4, marginLeft: 12, height: 18 }}>
-        <IOPill label="IN"  value={input}  options={INPUT_SOURCES}  onChange={(v) => trackController.updateTrack(track.id, { input: v })}  theme={theme} active={track.armed}/>
+        <IOPill
+          label="IN"
+          value={selectedInputLabel}
+          options={inputOptions}
+          onChange={onInputChange}
+          onOpen={onInputPillOpen}
+          theme={theme}
+          active={track.armed}
+          footer={
+            <button
+              onClick={() => {
+                void refreshInputDevices().then((next) => {
+                  setAvailableDevices({
+                    inputs: next.inputs,
+                    outputs: next.outputs,
+                    outputSelectionSupported: next.outputSelectionSupported,
+                    error: next.error,
+                  });
+                });
+              }}
+              style={{
+                width: '100%', textAlign: 'left',
+                padding: '4px 8px', borderRadius: 4,
+                fontFamily: 'var(--mono)', fontSize: 9.5, letterSpacing: '0.06em',
+                textTransform: 'uppercase', color: theme.pillText,
+                background: 'transparent', border: 'none', cursor: 'pointer',
+              }}
+            >
+              refresh devices
+            </button>
+          }
+        />
         <IOPill label="OUT" value={output} options={OUTPUT_SOURCES} onChange={(v) => trackController.updateTrack(track.id, { output: v })} theme={theme}/>
       </div>
 

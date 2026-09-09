@@ -1,11 +1,20 @@
-import { GoogleGenAI, type Chat, type Content, type FunctionCall, type Part } from "@google/genai";
+import {
+  GoogleGenAI,
+  type Chat,
+  type Content,
+  type FunctionCall,
+  type Part,
+} from "@google/genai";
 import { buildGeminiFunctionDeclarations } from "../tools/toolSchemas";
 import { executeTool, type ToolExecution } from "../tools/toolRouter";
 import { buildProjectSnapshot } from "../tools/agentTools";
 import { sanitizeName } from "../../../lib/constants";
 
-const API_KEY = (import.meta.env.VITE_GEMINI_API_KEY as string | undefined) ?? undefined;
-const CHAT_MODEL = (import.meta.env.VITE_GEMINI_CHAT_MODEL as string | undefined) ?? "gemini-2.5-flash";
+const API_KEY =
+  (import.meta.env.VITE_GEMINI_API_KEY as string | undefined) ?? undefined;
+const CHAT_MODEL =
+  (import.meta.env.VITE_GEMINI_CHAT_MODEL as string | undefined) ??
+  "gemini-2.5-flash";
 
 const SYSTEM_PROMPT = [
   "You are Groov2e's in-DAW AI collaborator — 'the Agent'. Users 'jam with the Agent'",
@@ -18,7 +27,7 @@ const SYSTEM_PROMPT = [
   "• Use getProjectSummary or listTracks when you need context — do not invent track names or ids.",
   "• Chain tools: you may call up to 8 tools per turn to fulfil complex requests.",
   "• For music generation, always call generateAndInsertClip with an explicit bar count.",
-  "• Keep narration under two sentences. Explain the net effect like a bandmate would (\"laid down a lofi bass at bar 4\"), not the internals.",
+  '• Keep narration under two sentences. Explain the net effect like a bandmate would ("laid down a lofi bass at bar 4"), not the internals.',
   "• If the user's intent is ambiguous, ask a single clarifying question instead of calling tools.",
 ].join("\n");
 
@@ -58,9 +67,13 @@ function contextPreamble(): string {
     `• BPM: ${summary.bpm}, Key: ${safeKey}`,
     `• Cursor: bar ${summary.cursorBar.toFixed(2)} (${summary.cursorSeconds.toFixed(2)}s)`,
     `• Transport: ${summary.transportStatus}`,
-    `• Tracks: ${summary.tracks.length === 0 ? "(none yet)" : summary.tracks
-      .map((t) => `${sanitizeName(t.name)}[${t.clipCount} clips]`)
-      .join(", ")}`,
+    `• Tracks: ${
+      summary.tracks.length === 0
+        ? "(none yet)"
+        : summary.tracks
+            .map((t) => `${sanitizeName(t.name)}[${t.clipCount} clips]`)
+            .join(", ")
+    }`,
   ].join("\n");
 }
 

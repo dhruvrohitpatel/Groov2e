@@ -3,6 +3,10 @@ import { projectController } from '../../controllers/projectController';
 import { transportController } from '../../controllers/transportController';
 import { audioService } from '../../features/audio/services/audioService';
 import { localProjectSnapshot } from '../../features/project/services/projectPersistenceService';
+import {
+  listSnapshots as listAutosaveSnapshots,
+  type AutosaveRecordMeta,
+} from '../../features/project/services/autosaveHistoryStore';
 import { useGroovyStore } from '../../store/useGroovyStore';
 import { useUiStore } from '../../store/useUiStore';
 import type { Density, ThemeName } from '../../types';
@@ -24,12 +28,12 @@ export interface MenuGroup {
   sections: MenuCommand[][];
 }
 
-function openFilePicker(accept: string, onFiles: (files: FileList) => void) {
+function openFilePicker(accept: string, onFiles: (files: FileList) => void, options?: { multiple?: boolean }) {
   if (typeof window === 'undefined') return;
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = accept;
-  input.multiple = true;
+  input.multiple = options?.multiple ?? true;
   input.style.display = 'none';
   input.addEventListener('change', () => {
     if (input.files) onFiles(input.files);
@@ -41,6 +45,17 @@ function openFilePicker(accept: string, onFiles: (files: FileList) => void) {
 
 function toast(message: string, tone: 'info' | 'warn' | 'error' = 'info') {
   useUiStore.getState().showToast(message, tone);
+}
+
+function formatAutosaveTimestamp(ms: number): string {
+  const d = new Date(ms);
+  return d.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+  });
 }
 
 function comingSoon(label: string) {
@@ -113,7 +128,11 @@ export function buildMenuGroups(): MenuGroup[] {
             id: 'file.open',
             label: 'Open…',
             shortcut: SC.open,
-            run: () => projectController.openProject(),
+            run: () =>
+              openFilePicker('.groovy,.json,application/json', (files) => {
+                const file = files.item(0);
+                if (file) void projectController.openProjectFile(file);
+              }, { multiple: false }),
           },
         ],
         [
@@ -121,17 +140,54 @@ export function buildMenuGroups(): MenuGroup[] {
             id: 'file.save',
             label: 'Save',
             shortcut: SC.save,
-            run: () => {
-              void projectController.saveProject();
+            run: async () => {
+              await projectController.saveProject();
               localProjectSnapshot.save();
-              toast('Project saved', 'info');
+              const error = useGroovyStore.getState().projectFile.lastError;
+              toast(error ? `Project save failed: ${error}` : 'Project saved', error ? 'error' : 'info');
             },
           },
           {
             id: 'file.saveAs',
             label: 'Save As…',
             shortcut: SC.saveAs,
-            run: () => projectController.saveProjectAs(),
+            run: async () => {
+              await projectController.saveProjectAs();
+              const error = useGroovyStore.getState().projectFile.lastError;
+              toast(error ? `Project save failed: ${error}` : 'Project saved', error ? 'error' : 'info');
+            },
+          },
+        ],
+        [
+          {
+            id: 'file.restoreAutosave',
+            label: 'Restore Autosave…',
+            run: async () => {
+              let snapshots: AutosaveRecordMeta[] = [];
+              try {
+                snapshots = await listAutosaveSnapshots();
+              } catch (err) {
+                toast(err instanceof Error ? err.message : 'Could not read autosave history.', 'error');
+                return;
+              }
+              if (snapshots.length === 0) {
+                toast('No autosave history yet.', 'info');
+                return;
+              }
+              const labels = snapshots
+                .map((snap, index) => `${index + 1}. ${formatAutosaveTimestamp(snap.timestamp)}`)
+                .join('\n');
+              const answer = typeof window !== 'undefined'
+                ? window.prompt(`Enter the number to restore:\n${labels}`, '1')
+                : null;
+              if (!answer) return;
+              const index = Number.parseInt(answer, 10) - 1;
+              if (!Number.isFinite(index) || index < 0 || index >= snapshots.length) {
+                toast('Invalid autosave number.', 'warn');
+                return;
+              }
+              await projectController.restoreAutosaveSnapshot(snapshots[index]!.id);
+            },
           },
         ],
         [

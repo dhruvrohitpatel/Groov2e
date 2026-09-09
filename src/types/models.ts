@@ -42,6 +42,15 @@ export interface ProjectFileState {
   projectFilePath: string | null;
   lastSavedAt: string | null;
   lastError: string | null;
+  isDirty: boolean;
+  savingState: "idle" | "saving" | "error";
+}
+
+export interface SelectionRange {
+  trackId: string;
+  startTime: number;
+  endTime: number;
+  clipId?: string;
 }
 
 export interface Track {

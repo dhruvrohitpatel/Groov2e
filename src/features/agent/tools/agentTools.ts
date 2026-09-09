@@ -541,6 +541,97 @@ const clips_trimClip: ToolDefinition<z.infer<typeof trimClipSchema>> = {
   },
 };
 
+// ------------------------ range (selectionRange) tools ------------------------
+
+const rangeSchema = z.object({
+  trackName: z.string(),
+  startBar: z.number().min(1),
+  endBar: z.number().min(1),
+});
+
+function applyRange({ trackName, startBar, endBar }: z.infer<typeof rangeSchema>) {
+  const track = findTrackByName(trackName);
+  if (!track) return { track: null as Track | null, message: `No track "${trackName}".` };
+  if (endBar <= startBar) return { track: null as Track | null, message: "Range end must be after start." };
+  const state = useGroovyStore.getState();
+  const bpm = state.project.bpm;
+  const startTime = barToSeconds(startBar, bpm);
+  const endTime = barToSeconds(endBar, bpm);
+  state.setSelectionRange({ trackId: track.id, startTime, endTime });
+  return { track, message: "" };
+}
+
+const range_crop: ToolDefinition<z.infer<typeof rangeSchema>> = {
+  name: "range_crop",
+  description: "Crop the single clip overlapping the bar range on the named track to exactly that range.",
+  category: "clips",
+  destructive: true,
+  schema: rangeSchema,
+  handler: (args) => {
+    const { track, message } = applyRange(args);
+    if (!track) return { ok: false, message };
+    const state = useGroovyStore.getState();
+    snapshot(`Crop range on ${track.name}`);
+    state.cropToSelectionRange();
+    return { ok: true, message: `Cropped ${track.name} to bars ${args.startBar}-${args.endBar}.` };
+  },
+};
+
+const range_delete: ToolDefinition<z.infer<typeof rangeSchema>> = {
+  name: "range_delete",
+  description: "Delete the audio inside the bar range on the named track (splits at edges and removes the middle).",
+  category: "clips",
+  destructive: true,
+  schema: rangeSchema,
+  handler: (args) => {
+    const { track, message } = applyRange(args);
+    if (!track) return { ok: false, message };
+    useGroovyStore.getState().deleteSelectionRange();
+    return { ok: true, message: `Deleted bars ${args.startBar}-${args.endBar} on ${track.name}.` };
+  },
+};
+
+const range_duplicate: ToolDefinition<z.infer<typeof rangeSchema>> = {
+  name: "range_duplicate",
+  description: "Duplicate the audio inside the bar range on the named track, placing the copy immediately after the range.",
+  category: "clips",
+  schema: rangeSchema,
+  handler: (args) => {
+    const { track, message } = applyRange(args);
+    if (!track) return { ok: false, message };
+    const newId = useGroovyStore.getState().duplicateSelectionRange();
+    if (!newId) return { ok: false, message: "Nothing to duplicate in that range." };
+    return { ok: true, message: `Duplicated bars ${args.startBar}-${args.endBar} on ${track.name}.`, data: { clipId: newId } };
+  },
+};
+
+const rangeGenerateSchema = rangeSchema.extend({
+  prompt: z.string().min(4),
+  instrument: z.string().optional(),
+  styleHints: z.string().optional(),
+});
+const range_generate: ToolDefinition<z.infer<typeof rangeGenerateSchema>> = {
+  name: "range_generate",
+  description:
+    "Generate new audio via Lyria sized to the bar range and insert it at the range start on the named track.",
+  category: "generation",
+  schema: rangeGenerateSchema,
+  handler: async ({ trackName, startBar, endBar, prompt, instrument, styleHints }) => {
+    const { track, message } = applyRange({ trackName, startBar, endBar });
+    if (!track) return { ok: false, message };
+    const bars = Math.max(1, Math.min(32, Math.round(endBar - startBar)));
+    return generation_generateAndInsertClip.handler({
+      trackName: track.name,
+      startBar,
+      bars,
+      prompt,
+      instrument,
+      styleHints,
+      createTrackIfMissing: false,
+    });
+  },
+};
+
 // ------------------------ generation ------------------------
 
 const generateAndInsertSchema = z.object({
@@ -600,6 +691,17 @@ const generation_generateAndInsertClip: ToolDefinition<
       .filter(Boolean)
       .join(" ");
 
+    // Find the current running activity row for this tool to emit progress.
+    const getRunningActivityId = () => {
+      const activity = useGroovyStore.getState().agentActivity;
+      for (let i = activity.length - 1; i >= 0; i -= 1) {
+        if (activity[i]!.name === "generateAndInsertClip" && activity[i]!.status === "running") {
+          return activity[i]!.id;
+        }
+      }
+      return null;
+    };
+
     let result;
     try {
       result = await generateMusicClip(prompt, {
@@ -608,6 +710,11 @@ const generation_generateAndInsertClip: ToolDefinition<
         bpm,
         instrument,
         styleHints: style || undefined,
+        onProgress: (stage) => {
+          const id = getRunningActivityId();
+          if (!id) return;
+          useGroovyStore.getState().updateAgentActivityProgress(id, { stage });
+        },
       });
     } catch (error) {
       // Surface Lyria/decoder failures as tool errors so the agent narrates
@@ -784,6 +891,10 @@ export const agentTools: ToolDefinition[] = [
   clips_deleteClip as ToolDefinition,
   clips_moveClip as ToolDefinition,
   clips_trimClip as ToolDefinition,
+  range_crop as ToolDefinition,
+  range_delete as ToolDefinition,
+  range_duplicate as ToolDefinition,
+  range_generate as ToolDefinition,
   generation_generateAndInsertClip as ToolDefinition,
   transport_seekToBar as ToolDefinition,
   transport_play as ToolDefinition,

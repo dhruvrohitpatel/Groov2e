@@ -47,6 +47,9 @@ export interface GenerateOptions {
   instrument?: string;
   /** Additional mood/style hints appended after the prompt. */
   styleHints?: string;
+  /** Synthetic progress stages for the in-app activity feed. Gemini itself is
+   * request/response, so these mark the known milestones in the pipeline. */
+  onProgress?: (stage: 'requesting' | 'decoding' | 'encoding') => void;
 }
 
 function base64ToBytes(base64: string): Uint8Array {
@@ -213,6 +216,7 @@ export async function generateMusicClip(prompt: string, opts: GenerateOptions = 
   const ai = getClient();
   const structured = buildStructuredPrompt(prompt, opts);
 
+  opts.onProgress?.('requesting');
   let response;
   try {
     response = await ai.models.generateContent({
@@ -255,6 +259,7 @@ export async function generateMusicClip(prompt: string, opts: GenerateOptions = 
   // If decode fails here, the bytes are unusable — throwing is the right
   // call so the tool returns ok:false and the agent can narrate accurately
   // instead of confidently claiming it dropped a clip that silently failed.
+  opts.onProgress?.('decoding');
   let decoded: AudioBuffer;
   try {
     const ctx = getGlobalAudioContext();
@@ -268,6 +273,7 @@ export async function generateMusicClip(prompt: string, opts: GenerateOptions = 
     );
   }
 
+  opts.onProgress?.('encoding');
   const silenceFrames = detectLeadingSilenceFrames(decoded);
   const trimmedDuration = decoded.duration - silenceFrames / decoded.sampleRate;
   const usable = targetSeconds ? Math.min(targetSeconds, trimmedDuration) : trimmedDuration;

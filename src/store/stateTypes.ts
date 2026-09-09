@@ -5,6 +5,7 @@ import type {
   Project,
   ProjectFileState,
   RecordingState,
+  SelectionRange,
   TakeGroup,
   TimelineViewState,
   Track,
@@ -39,6 +40,7 @@ export interface AgentToolActivity {
   snapshotPushed: boolean;
   durationMs?: number;
   startedAt: number;
+  progress?: { stage: string; current?: number; total?: number };
 }
 
 export interface GroovyStoreStatePublic {
@@ -49,6 +51,7 @@ export interface GroovyStoreStatePublic {
   takeGroups: Record<string, TakeGroup>;
   selectedTrackId: string | null;
   selectedClipId: string | null;
+  selectionRange: SelectionRange | null;
   cursorPosition: number;
   timeline: TimelineViewState;
   recording: RecordingState;

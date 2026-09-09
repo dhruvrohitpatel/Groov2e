@@ -113,6 +113,8 @@ const projectFile: ProjectFileState = {
   projectFilePath: null,
   lastSavedAt: null,
   lastError: null,
+  isDirty: false,
+  savingState: "idle",
 };
 
 const project: Project = {

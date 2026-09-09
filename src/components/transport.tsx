@@ -26,6 +26,7 @@ export function TransportPill({ theme, onLampClick, genieActive }: Props) {
   const cursorPosition = useGroovyStore((s) => s.cursorPosition);
   const isRecording = useGroovyStore((s) => s.recording.isRecording);
   const countInEnabled = useGroovyStore((s) => s.recording.countInEnabled);
+  const countInBars = useGroovyStore((s) => s.recording.countInBars);
   const isCountInActive = useGroovyStore((s) => s.recording.isCountInActive);
   const countInBeatsRemaining = useGroovyStore((s) => s.recording.countInBeatsRemaining);
   const setCountInEnabled = useGroovyStore((s) => s.setCountInEnabled);
@@ -101,7 +102,7 @@ export function TransportPill({ theme, onLampClick, genieActive }: Props) {
 
       <button
         onClick={() => setCountInEnabled(!countInEnabled)}
-        title={countInEnabled ? 'Count-in: on (1 bar)' : 'Count-in: off'}
+        title={countInEnabled ? `Count-in: on (${countInBars} bar${countInBars === 1 ? '' : 's'})` : 'Count-in: off'}
         style={{
           padding: '0 12px',
           background: isCountInActive
@@ -113,7 +114,7 @@ export function TransportPill({ theme, onLampClick, genieActive }: Props) {
           cursor: 'pointer',
           borderRight: `1px solid ${theme.pillDivider}`,
           display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-          gap: 1, minWidth: 44,
+          gap: 1, minWidth: 64,
           fontFamily: 'var(--mono)',
           color: isCountInActive
             ? '#fff'
@@ -122,11 +123,15 @@ export function TransportPill({ theme, onLampClick, genieActive }: Props) {
               : theme.pillTextStrong,
         }}
       >
-        <div style={{ fontSize: 8.5, letterSpacing: '0.1em', textTransform: 'uppercase', opacity: 0.85 }}>
-          count
+        <div style={{ fontSize: 8.5, letterSpacing: '0.08em', textTransform: 'uppercase', opacity: 0.85 }}>
+          count-in
         </div>
-        <div style={{ fontSize: 13, fontVariantNumeric: 'tabular-nums', lineHeight: 1 }}>
-          {isCountInActive && countInBeatsRemaining !== null ? countInBeatsRemaining : '1'}
+        <div style={{ fontSize: 12, fontVariantNumeric: 'tabular-nums', lineHeight: 1 }}>
+          {isCountInActive && countInBeatsRemaining !== null
+            ? `${countInBeatsRemaining} beat${countInBeatsRemaining === 1 ? '' : 's'}`
+            : countInEnabled
+              ? `${countInBars} bar${countInBars === 1 ? '' : 's'}`
+              : 'off'}
         </div>
       </button>
 

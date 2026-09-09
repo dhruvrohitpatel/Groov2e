@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import type { Theme } from './types';
 import { useGroovyStore } from './store/useGroovyStore';
 import { useUiStore } from './store/useUiStore';
@@ -13,6 +13,8 @@ import { TweaksPanel } from './components/tweaks';
 import { Lane } from './components/Lane';
 import { Menubar } from './components/menubar/Menubar';
 import { buildShortcutBindings, runCommand } from './components/menubar/commands';
+import { ProjectStatusPill } from './components/ProjectStatusPill';
+import { SelectionRangeActions } from './components/SelectionRangeActions';
 import { Toasts } from './components/Toasts';
 import { HelpModals } from './components/HelpModals';
 import { MixerDrawer } from './components/mixer/MixerDrawer';
@@ -20,6 +22,7 @@ import { trackController } from './controllers/trackController';
 import { projectController } from './controllers/projectController';
 import { transportController } from './controllers/transportController';
 import { localProjectSnapshot } from './features/project/services/projectPersistenceService';
+import { listAudioDevices } from './features/devices/services/deviceService';
 import { getBlob, IDB_PREFIX } from './features/project/services/audioBlobStore';
 import { getOrCreateUrl, revokeAll, revokeForClip } from './features/audio/services/blobUrlRegistry';
 
@@ -30,6 +33,7 @@ export function App() {
   const cursorPosition = useGroovyStore((s) => s.cursorPosition);
   const isRecording = useGroovyStore((s) => s.recording.isRecording);
   const selectedClipId = useGroovyStore((s) => s.selectedClipId);
+  const selectionRange = useGroovyStore((s) => s.selectionRange);
   const selectedClip = selectedClipId ? clips[selectedClipId] ?? null : null;
   const canSplit = !!selectedClip
     && cursorPosition > selectedClip.startTime
@@ -49,6 +53,36 @@ export function App() {
     document.documentElement.setAttribute('data-density', tweaks.density);
     document.documentElement.setAttribute('data-theme', tweaks.theme);
   }, [tweaks.density, tweaks.theme]);
+
+  // Best-effort: enumerate audio devices at startup so the track-head "IN"
+  // picker has ids/labels on first open. Real labels only appear after mic
+  // permission is granted — the pill triggers `refreshInputDevices()` on open
+  // to handle that, but this gives us something to show immediately.
+  useEffect(() => {
+    void listAudioDevices().then((devices) => {
+      useGroovyStore.getState().setAvailableDevices({
+        inputs: devices.inputs,
+        outputs: devices.outputs,
+        outputSelectionSupported: devices.outputSelectionSupported,
+        error: devices.error,
+      });
+    });
+
+    const onChange = () => {
+      void listAudioDevices().then((devices) => {
+        useGroovyStore.getState().setAvailableDevices({
+          inputs: devices.inputs,
+          outputs: devices.outputs,
+          outputSelectionSupported: devices.outputSelectionSupported,
+          error: devices.error,
+        });
+      });
+    };
+    navigator.mediaDevices?.addEventListener?.('devicechange', onChange);
+    return () => {
+      navigator.mediaDevices?.removeEventListener?.('devicechange', onChange);
+    };
+  }, []);
 
   useEffect(() => {
     localProjectSnapshot.listenForCrossTabChanges();
@@ -112,11 +146,59 @@ export function App() {
     return () => { unsub(); revokeAll(); };
   }, []);
 
+  // Dirty-tracking: watch a whitelist of fields that represent *user-visible*
+  // project state and flip projectFile.isDirty. Skip the initial hydration so
+  // loading a snapshot doesn't immediately light up "unsaved".
+  const hydratingRef = useRef(true);
+  useEffect(() => {
+    const timer = window.setTimeout(() => { hydratingRef.current = false; }, 200);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    let prev = (() => {
+      const s = useGroovyStore.getState();
+      return { project: s.project, tracks: s.tracks, clips: s.clips, transport: s.transport, takeGroups: s.takeGroups };
+    })();
+    const unsub = useGroovyStore.subscribe((state) => {
+      const changed =
+        state.project !== prev.project ||
+        state.tracks !== prev.tracks ||
+        state.clips !== prev.clips ||
+        state.transport !== prev.transport ||
+        state.takeGroups !== prev.takeGroups;
+      if (!changed) return;
+      prev = { project: state.project, tracks: state.tracks, clips: state.clips, transport: state.transport, takeGroups: state.takeGroups };
+      if (hydratingRef.current) return;
+      if (!state.projectFile.isDirty) {
+        useGroovyStore.getState().setProjectFileState({ isDirty: true });
+      }
+    });
+    return () => unsub();
+  }, []);
+
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     const unsub = useGroovyStore.subscribe(() => {
       if (timer) clearTimeout(timer);
-      timer = setTimeout(() => localProjectSnapshot.save(), 1500);
+      timer = setTimeout(() => {
+        const state = useGroovyStore.getState();
+        state.setProjectFileState({ savingState: 'saving' });
+        try {
+          localProjectSnapshot.save();
+          state.setProjectFileState({
+            savingState: 'idle',
+            lastSavedAt: new Date().toISOString(),
+            isDirty: false,
+            lastError: null,
+          });
+        } catch (err) {
+          state.setProjectFileState({
+            savingState: 'error',
+            lastError: err instanceof Error ? err.message : 'Autosave failed.',
+          });
+        }
+      }, 1500);
     });
     return () => {
       if (timer) clearTimeout(timer);
@@ -205,6 +287,7 @@ export function App() {
           <div style={{ fontFamily: 'var(--mono)', fontSize: 10, color: theme.pillText, letterSpacing: '0.06em' }}>
             {project.name} · {tracks.length} tracks
           </div>
+          <ProjectStatusPill theme={theme} />
           <button onClick={() => setTweaksOpen(!tweaksOpen)} style={{
             fontFamily: 'var(--mono)', fontSize: 10, letterSpacing: '0.06em',
             padding: '4px 10px', border: `1px solid ${theme.pillDivider}`,
@@ -291,9 +374,11 @@ export function App() {
         theme={theme}
       />
 
-      {selectedClipId && (
+      {selectionRange ? (
+        <SelectionRangeActions theme={theme}/>
+      ) : selectedClipId ? (
         <ClipActions canSplit={canSplit} theme={theme}/>
-      )}
+      ) : null}
 
       {isRecording && <RecordingBadge/>}
 

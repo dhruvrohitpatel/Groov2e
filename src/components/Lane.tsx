@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, type MouseEvent as ReactMouseEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { setMasterAnalyser } from '../features/audio/services/masterAnalyser';
 import {
   ClipInteractionProvider,
@@ -34,6 +34,9 @@ import { buildGroovyWaveformTheme } from '../theme/waveformTheme';
 import type { Theme, ThemeName } from '../types';
 import { TrackHead } from './trackHead';
 import { TRACK_HEAD_WIDTH } from './timeline';
+import { SelectionRangeOverlay } from './SelectionRangeOverlay';
+import { TimelineEmptyState } from './TimelineEmptyState';
+import { snapToBar, snapToBeat } from '../lib/musicalTime';
 
 interface LaneProps {
   theme: Theme;
@@ -304,8 +307,21 @@ export function Lane({ theme, themeName }: LaneProps) {
   const recording = useGroovyStore((state) => state.recording);
   const cursorPosition = useGroovyStore((state) => state.cursorPosition);
   const snap = useUiStore((state) => state.snap);
+  const selectionSnap = useUiStore((state) => state.selectionSnap);
   const samplesPerPixel = useUiStore((state) => state.samplesPerPixel);
   const density = useUiStore((state) => state.tweaks.density);
+  const [laneWidth, setLaneWidth] = useState(0);
+
+  useEffect(() => {
+    const el = laneRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      const rect = entries[0]?.contentRect;
+      if (rect) setLaneWidth(rect.width);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
   const { buffersBySource, isReady, lastError } = useDecodedClipBuffers(clips);
 
   const playlistRowCacheRef = useRef(createPlaylistRowCache());
@@ -382,15 +398,72 @@ export function Lane({ theme, themeName }: LaneProps) {
   // wfpl only tracks selected *tracks*, not clips. Intercept clicks on the
   // clip header (which carries data-clip-id) so the user's explicit choice
   // drives selectedClipId — and Delete never guesses.
+  const zoomPxPerSecond = (project.sampleRate ?? 44100) / Math.max(1, samplesPerPixel);
+  const trackHeightRef = useRef(DENSITY_TRACK_HEIGHT[density]);
+  useEffect(() => { trackHeightRef.current = DENSITY_TRACK_HEIGHT[density]; }, [density]);
+
   const handleLaneMouseDown = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement | null;
     if (!target) return;
     const header = target.closest<HTMLElement>('[data-clip-id]');
-    if (!header) return;
-    const clipId = header.dataset.clipId;
-    if (!clipId) return;
-    trackController.selectClip(clipId);
-  }, []);
+    const clipId = header?.dataset.clipId;
+    const wantsRange = event.shiftKey || !clipId;
+    const laneEl = laneRef.current;
+    if (!laneEl) return;
+    const rect = laneEl.getBoundingClientRect();
+    // Only engage range-drag when the pointer is past the track-head gutter.
+    const localX = event.clientX - rect.left;
+    if (localX < TRACK_HEAD_WIDTH) {
+      if (clipId) trackController.selectClip(clipId);
+      return;
+    }
+
+    if (clipId && !wantsRange) {
+      trackController.selectClip(clipId);
+      return;
+    }
+
+    // Resolve which track row the mousedown started on.
+    const rowY = event.clientY - rect.top - /* ruler */ 52;
+    const trackIndex = Math.floor(rowY / trackHeightRef.current);
+    const appTrack = tracks[trackIndex];
+    if (!appTrack) return;
+
+    const pxPerSec = zoomPxPerSecond;
+    const startSeconds = Math.max(0, (localX - TRACK_HEAD_WIDTH) / pxPerSec);
+    const bpm = project.bpm;
+    const applySnap = (seconds: number): number => {
+      if (selectionSnap === 'off') return seconds;
+      if (selectionSnap === 'bar') return snapToBar(seconds, bpm);
+      return snapToBeat(seconds, bpm);
+    };
+    const snappedStart = applySnap(startSeconds);
+    useGroovyStore.getState().setSelectionRange({
+      trackId: appTrack.id,
+      startTime: snappedStart,
+      endTime: snappedStart,
+    });
+
+    let moved = false;
+    const onMove = (ev: MouseEvent) => {
+      const lx = ev.clientX - rect.left;
+      if (Math.abs(lx - localX) > 3) moved = true;
+      const seconds = Math.max(0, (lx - TRACK_HEAD_WIDTH) / pxPerSec);
+      useGroovyStore.getState().extendSelectionRange(applySnap(seconds));
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      const range = useGroovyStore.getState().selectionRange;
+      if (!moved || !range || Math.abs(range.endTime - range.startTime) < 0.0001) {
+        useGroovyStore.getState().clearSelectionRange();
+        if (clipId) trackController.selectClip(clipId);
+      }
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    event.preventDefault();
+  }, [project.bpm, project.sampleRate, samplesPerPixel, selectionSnap, tracks, zoomPxPerSecond]);
 
   // Paint a clear ring around the single clip the user actually selected so
   // track-level "selected" shading doesn't mislead which clip Delete acts on.
@@ -475,6 +548,24 @@ export function Lane({ theme, themeName }: LaneProps) {
           </ClipInteractionProvider>
         </WaveformPlaylistProvider>
       </BeatsAndBarsProvider>
+
+      <SelectionRangeOverlay
+        theme={theme}
+        trackHeight={trackHeight}
+        zoomPxPerSecond={zoomPxPerSecond}
+        scrollLeft={0}
+        laneInnerWidth={Math.max(0, laneWidth - TRACK_HEAD_WIDTH)}
+        contentOriginLeft={TRACK_HEAD_WIDTH}
+      />
+
+      {!recording.isRecording && (tracks.length === 0 || Object.keys(clips).length === 0) ? (
+        <TimelineEmptyState
+          theme={theme}
+          variant={tracks.length === 0 ? 'no-tracks' : 'no-clips'}
+          onAddTrack={() => trackController.addTrack()}
+          onOpenAgent={() => useUiStore.getState().setGenieOpen(true)}
+        />
+      ) : null}
 
       {!isReady && decodingClipCount > 0 ? (
         <div style={{

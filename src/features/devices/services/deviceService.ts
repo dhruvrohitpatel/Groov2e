@@ -13,6 +13,26 @@ function supportsOutputSelection(): boolean {
   return typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype;
 }
 
+/**
+ * Request microphone permission briefly so `enumerateDevices()` can return
+ * real labels (browsers blank them until permission is granted at least once
+ * in this origin). The stream is stopped immediately — we only need the label
+ * unlock, not the audio.
+ */
+export async function refreshInputDevices(): Promise<ListedDevices> {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    return listAudioDevices();
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream.getTracks().forEach((track) => track.stop());
+  } catch {
+    // Permission denied / no mic — fall through to whatever enumerateDevices
+    // will return (device ids without labels).
+  }
+  return listAudioDevices();
+}
+
 export async function listAudioDevices(): Promise<ListedDevices> {
   if (!navigator.mediaDevices?.enumerateDevices) {
     return {

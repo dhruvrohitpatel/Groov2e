@@ -87,6 +87,22 @@ function ActivityRow({ a, theme }: { a: AgentToolActivity; theme: Theme }) {
         <b style={{ fontWeight: 600 }}>{a.name}</b>
         {label ? <span style={{ opacity: 0.7 }}> · {label}</span> : null}
       </span>
+      {a.status === 'running' && a.progress ? (
+        <span
+          style={{
+            fontFamily: 'var(--mono)',
+            fontSize: 9.5,
+            letterSpacing: '0.08em',
+            textTransform: 'uppercase',
+            opacity: 0.55,
+          }}
+        >
+          {a.progress.stage}
+          {typeof a.progress.current === 'number' && typeof a.progress.total === 'number'
+            ? ` ${a.progress.current}/${a.progress.total}`
+            : ''}
+        </span>
+      ) : null}
       {a.snapshotPushed && a.status === 'ok' ? (
         <span
           title="Reversible via Undo Last AI Change (⌘⇧Z)"

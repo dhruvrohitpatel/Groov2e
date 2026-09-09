@@ -355,7 +355,7 @@ export class TonePlayout {
     const track = this.tracks.get(trackId);
     if (track) {
       this.manualMuteState.set(trackId, muted);
-      track.setMute(muted);
+      this.updateSoloMuting();
     }
   }
 

@@ -11,3 +11,9 @@ createRoot(document.getElementById('root')!).render(
     </ErrorBoundary>
   </StrictMode>,
 );
+
+// Hide loading spinner once React has mounted
+const spinner = document.getElementById('loading-spinner');
+if (spinner) {
+  spinner.classList.add('hidden');
+}

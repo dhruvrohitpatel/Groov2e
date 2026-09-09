@@ -263,4 +263,43 @@ describe('TonePlayout', () => {
       expect(mockTransport.off).not.toHaveBeenCalledWith('loop', expect.anything());
     });
   });
+
+  describe('mute and solo', () => {
+    it('keeps non-soloed tracks muted when their manual mute changes during solo', () => {
+      const playout = new TonePlayout();
+      const track1 = createMockTrack('t1');
+      const track2 = createMockTrack('t2');
+      const tracks = (playout as unknown as { tracks: Map<string, unknown> }).tracks;
+      tracks.set('t1', track1);
+      tracks.set('t2', track2);
+
+      playout.setSolo('t1', true);
+      track1.setMute.mockClear();
+      track2.setMute.mockClear();
+
+      playout.setMute('t2', false);
+
+      expect(track1.setMute).toHaveBeenLastCalledWith(false);
+      expect(track2.setMute).toHaveBeenLastCalledWith(true);
+    });
+
+    it('restores manual mute state when the last solo is disabled', () => {
+      const playout = new TonePlayout();
+      const track1 = createMockTrack('t1');
+      const track2 = createMockTrack('t2');
+      const tracks = (playout as unknown as { tracks: Map<string, unknown> }).tracks;
+      tracks.set('t1', track1);
+      tracks.set('t2', track2);
+
+      playout.setMute('t2', true);
+      playout.setSolo('t1', true);
+      track1.setMute.mockClear();
+      track2.setMute.mockClear();
+
+      playout.setSolo('t1', false);
+
+      expect(track1.setMute).toHaveBeenLastCalledWith(false);
+      expect(track2.setMute).toHaveBeenLastCalledWith(true);
+    });
+  });
 });

@@ -6,6 +6,7 @@ import type {
   Clip,
   DeviceState,
   ProjectFileState,
+  SelectionRange,
   TakeGroup,
   TimelineViewState,
   Track,
@@ -37,6 +38,12 @@ interface GroovyStoreActions {
   setTimelineZoomPxPerSecond: (zoomPxPerSecond: number) => void;
   selectTrack: (trackId: string | null) => void;
   selectClip: (clipId: string | null) => void;
+  setSelectionRange: (range: SelectionRange | null) => void;
+  clearSelectionRange: () => void;
+  extendSelectionRange: (endTime: number) => void;
+  cropToSelectionRange: () => void;
+  deleteSelectionRange: () => void;
+  duplicateSelectionRange: () => string | null;
   addTrack: (name?: string) => string;
   duplicateTrack: (trackId: string) => string | null;
   deleteTrack: (trackId: string) => void;
@@ -109,6 +116,7 @@ interface GroovyStoreActions {
     snapshotPushed: boolean;
     durationMs: number;
   }) => void;
+  updateAgentActivityProgress: (id: string, progress: { stage: string; current?: number; total?: number } | null) => void;
   clearAgentActivity: () => void;
 }
 
@@ -367,6 +375,19 @@ function isCursorInsideClip(clip: Clip, cursorPosition: number): boolean {
   return cursorPosition > clip.startTime && cursorPosition < clipEnd;
 }
 
+function clipAtRange(state: GroovyStoreState, trackId: string, timeSeconds: number): Clip | null {
+  const track = state.tracks.find((t) => t.id === trackId);
+  if (!track) return null;
+  for (const clipId of track.clips) {
+    const clip = state.clips[clipId];
+    if (!clip) continue;
+    if (timeSeconds >= clip.startTime && timeSeconds <= clip.startTime + clip.duration) {
+      return clip;
+    }
+  }
+  return null;
+}
+
 function normalizeTakeGroupsFromClips(
   takeGroups: Record<string, TakeGroup>,
   clips: Record<string, Clip>,
@@ -394,6 +415,7 @@ function normalizeTakeGroupsFromClips(
 export const useGroovyStore = create<GroovyStore>((set, get) => ({
   ...initialState,
   projectFile: initialState.projectFile,
+  selectionRange: null,
   agentRequest: {
     isLoading: false,
     lastPayload: null,
@@ -430,8 +452,16 @@ export const useGroovyStore = create<GroovyStore>((set, get) => ({
               destructive: patch.destructive,
               snapshotPushed: patch.snapshotPushed,
               durationMs: patch.durationMs,
+              progress: undefined,
             }
           : entry,
+      ),
+    })),
+
+  updateAgentActivityProgress: (id, progress) =>
+    set((state) => ({
+      agentActivity: state.agentActivity.map((entry) =>
+        entry.id === id ? { ...entry, progress: progress ?? undefined } : entry,
       ),
     })),
 
@@ -613,15 +643,172 @@ export const useGroovyStore = create<GroovyStore>((set, get) => ({
     set((state) => {
       const nextSelectedTrackId = clipId ? state.clips[clipId]?.trackId ?? state.selectedTrackId : state.selectedTrackId;
 
-      if (state.selectedClipId === clipId && state.selectedTrackId === nextSelectedTrackId) {
+      if (
+        state.selectedClipId === clipId &&
+        state.selectedTrackId === nextSelectedTrackId &&
+        state.selectionRange === null
+      ) {
         return state;
       }
 
       return {
         selectedClipId: clipId,
         selectedTrackId: nextSelectedTrackId,
+        selectionRange: null,
       };
     }),
+
+  setSelectionRange: (range) =>
+    set((state) => {
+      if (!range) {
+        if (state.selectionRange === null) return state;
+        return { selectionRange: null };
+      }
+      const start = Math.max(0, Math.min(range.startTime, range.endTime));
+      const end = Math.max(range.startTime, range.endTime);
+      const clipForRange = clipAtRange(state, range.trackId, (start + end) / 2);
+      return {
+        selectionRange: {
+          trackId: range.trackId,
+          startTime: start,
+          endTime: end,
+          clipId: clipForRange?.id ?? range.clipId,
+        },
+        selectedClipId: null,
+        selectedTrackId: range.trackId,
+      };
+    }),
+
+  clearSelectionRange: () =>
+    set((state) => (state.selectionRange === null ? state : { selectionRange: null })),
+
+  extendSelectionRange: (endTime) =>
+    set((state) => {
+      if (!state.selectionRange) return state;
+      const startTime = state.selectionRange.startTime;
+      const nextEnd = Math.max(0, endTime);
+      const [lo, hi] = startTime <= nextEnd ? [startTime, nextEnd] : [nextEnd, startTime];
+      return {
+        selectionRange: {
+          ...state.selectionRange,
+          startTime: lo,
+          endTime: hi,
+        },
+      };
+    }),
+
+  cropToSelectionRange: () => {
+    const state = get();
+    const range = state.selectionRange;
+    if (!range) return;
+    const clip = clipAtRange(state, range.trackId, (range.startTime + range.endTime) / 2);
+    if (!clip) return;
+    const rangeStart = Math.max(range.startTime, clip.startTime);
+    const rangeEnd = Math.min(range.endTime, clip.startTime + clip.duration);
+    const nextDuration = rangeEnd - rangeStart;
+    if (nextDuration <= 0) return;
+    state.snapshotForAgent(`Crop "${clip.name}"`);
+    const sourceOffsetDelta = rangeStart - clip.startTime;
+    set((current) => ({
+      clips: {
+        ...current.clips,
+        [clip.id]: {
+          ...clip,
+          startTime: rangeStart,
+          duration: nextDuration,
+          sourceOffset: clip.sourceOffset + Math.max(0, sourceOffsetDelta),
+        },
+      },
+      selectionRange: {
+        ...range,
+        startTime: rangeStart,
+        endTime: rangeEnd,
+        clipId: clip.id,
+      },
+    }));
+  },
+
+  deleteSelectionRange: () => {
+    const state = get();
+    const range = state.selectionRange;
+    if (!range) return;
+    const clip = clipAtRange(state, range.trackId, (range.startTime + range.endTime) / 2);
+    if (!clip) return;
+    const clipEnd = clip.startTime + clip.duration;
+    const rangeStart = Math.max(range.startTime, clip.startTime);
+    const rangeEnd = Math.min(range.endTime, clipEnd);
+    if (rangeEnd - rangeStart <= 0) return;
+    state.snapshotForAgent(`Delete range on ${clip.name}`);
+
+    const leftDuration = rangeStart - clip.startTime;
+    const rightDuration = clipEnd - rangeEnd;
+    const nextClips = { ...state.clips };
+    const nextClipIds: string[] = [];
+
+    if (leftDuration > 0) {
+      const leftId = createId("clip");
+      nextClips[leftId] = {
+        ...clip,
+        id: leftId,
+        duration: leftDuration,
+        name: `${clip.name} L`,
+      };
+      nextClipIds.push(leftId);
+    }
+    if (rightDuration > 0) {
+      const rightId = createId("clip");
+      nextClips[rightId] = {
+        ...clip,
+        id: rightId,
+        startTime: rangeEnd,
+        duration: rightDuration,
+        sourceOffset: clip.sourceOffset + (rangeEnd - clip.startTime),
+        name: `${clip.name} R`,
+      };
+      nextClipIds.push(rightId);
+    }
+    delete nextClips[clip.id];
+
+    set((current) => ({
+      clips: nextClips,
+      tracks: current.tracks.map((t) =>
+        t.id === clip.trackId ? replaceClipIdsInTrack(t, clip.id, nextClipIds) : t,
+      ),
+      selectionRange: null,
+      selectedClipId: nextClipIds[nextClipIds.length - 1] ?? null,
+    }));
+  },
+
+  duplicateSelectionRange: () => {
+    const state = get();
+    const range = state.selectionRange;
+    if (!range) return null;
+    const clip = clipAtRange(state, range.trackId, (range.startTime + range.endTime) / 2);
+    if (!clip) return null;
+    const rangeStart = Math.max(range.startTime, clip.startTime);
+    const rangeEnd = Math.min(range.endTime, clip.startTime + clip.duration);
+    const duration = rangeEnd - rangeStart;
+    if (duration <= 0) return null;
+    state.snapshotForAgent(`Duplicate range on ${clip.name}`);
+    const newId = createId("clip");
+    const copy: Clip = {
+      ...clip,
+      id: newId,
+      startTime: rangeEnd,
+      duration,
+      sourceOffset: clip.sourceOffset + (rangeStart - clip.startTime),
+      name: `${clip.name} copy`,
+      takeGroupId: undefined,
+    };
+    set((current) => ({
+      clips: { ...current.clips, [newId]: copy },
+      tracks: current.tracks.map((t) =>
+        t.id === clip.trackId ? { ...t, clips: [...t.clips, newId] } : t,
+      ),
+      selectedClipId: newId,
+    }));
+    return newId;
+  },
 
   addTrack: (name) => {
     const trackName = (name ? sanitizeName(name) : "") || `Track ${get().tracks.length + 1}`;

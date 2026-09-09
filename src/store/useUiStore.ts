@@ -21,11 +21,14 @@ export interface Toast {
   tone: 'info' | 'warn' | 'error';
 }
 
+export type SelectionSnap = 'off' | 'beat' | 'bar';
+
 interface UiState {
   tweaks: Tweaks;
   tweaksOpen: boolean;
   genieOpen: boolean;
   snap: SnapMode;
+  selectionSnap: SelectionSnap;
   samplesPerPixel: number;
   canZoomIn: boolean;
   canZoomOut: boolean;
@@ -36,11 +39,13 @@ interface UiState {
   setTweaksOpen: (open: boolean) => void;
   setGenieOpen: (open: boolean) => void;
   setSnap: (snap: SnapMode) => void;
+  setSelectionSnap: (snap: SelectionSnap) => void;
   setSamplesPerPixel: (samplesPerPixel: number) => void;
   setZoomBounds: (canZoomIn: boolean, canZoomOut: boolean) => void;
   zoomIn: () => void;
   zoomOut: () => void;
   showToast: (message: string, tone?: Toast['tone']) => string;
+  updateToast: (id: string, message: string, tone?: Toast['tone']) => void;
   dismissToast: (id: string) => void;
   setShortcutsModalOpen: (open: boolean) => void;
   setAboutModalOpen: (open: boolean) => void;
@@ -68,6 +73,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   tweaksOpen: false,
   genieOpen: false,
   snap: 'bar',
+  selectionSnap: 'bar',
   samplesPerPixel: DEFAULT_ZOOM_LEVEL,
   canZoomIn: true,
   canZoomOut: true,
@@ -79,6 +85,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   setTweaksOpen: (tweaksOpen) => set({ tweaksOpen }),
   setGenieOpen: (genieOpen) => set({ genieOpen }),
   setSnap: (snap) => set({ snap }),
+  setSelectionSnap: (selectionSnap) => set({ selectionSnap }),
   setSamplesPerPixel: (samplesPerPixel) => set({ samplesPerPixel }),
   setZoomBounds: (canZoomIn, canZoomOut) => {
     const current = get();
@@ -102,6 +109,12 @@ export const useUiStore = create<UiState>((set, get) => ({
     }
     return id;
   },
+  updateToast: (id, message, tone) =>
+    set((state) => ({
+      toasts: state.toasts.map((toast) =>
+        toast.id === id ? { ...toast, message, tone: tone ?? toast.tone } : toast,
+      ),
+    })),
   dismissToast: (id) =>
     set((state) => ({ toasts: state.toasts.filter((toast) => toast.id !== id) })),
   setShortcutsModalOpen: (shortcutsModalOpen) => set({ shortcutsModalOpen }),
